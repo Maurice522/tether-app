@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
@@ -27,7 +28,7 @@ const _uuid = Uuid();
 /// Single source of truth for the UI: wires discovery, the transfer
 /// server/client, and persisted settings/trust/history together, and
 /// exposes everything the screens need as observable state.
-class AppState extends ChangeNotifier {
+class AppState extends ChangeNotifier with WidgetsBindingObserver {
   final DesktopWindowService? desktopWindow;
 
   AppState({this.desktopWindow});
@@ -93,15 +94,30 @@ class AppState extends ChangeNotifier {
     _ready = true;
     notifyListeners();
     _restartClipboardSync();
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _devicesSub?.cancel();
     _discovery?.stop();
     _server?.stop();
     _clipboardTimer?.cancel();
     super.dispose();
+  }
+
+  /// Android blocks a backgrounded app from reading the system clipboard
+  /// at all, so the periodic poll may have spent the whole time in the
+  /// background silently seeing a stale/blocked read — it can't detect a
+  /// copy made while unfocused no matter how often it ticks. As soon as
+  /// the app is focused again, force an immediate check instead of
+  /// waiting up to [_clipboardPollInterval] for the next scheduled tick.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _pollClipboard();
+    }
   }
 
   /// Re-broadcasts a discovery announce right now instead of waiting for

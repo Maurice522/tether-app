@@ -60,10 +60,15 @@ Implemented (Phases 1–4 core logic):
   watcher plugin, so it behaves identically on all three platforms without
   more native code to build-test blind for Windows). **Android caveat**:
   Android 10+ blocks any backgrounded app from reading the system
-  clipboard — a deliberate OS privacy rule, not a bug here — so on Android
-  a new copy is only picked up while LAN Share is open and in front;
-  receiving a push from the other device still works any time the app's
-  process is alive.
+  clipboard — a deliberate OS privacy rule, not a bug here. Confirmed on a
+  real device: the app process and its receiver keep running fine in the
+  background (a push from the other device is applied immediately, any
+  time), but the periodic poll's read is silently blocked/stale the whole
+  time LAN Share isn't focused, so it can't detect a copy made while
+  backgrounded no matter how often it ticks. `AppState` observes app
+  lifecycle and forces one immediate check on resume, so switching back
+  to LAN Share (not a full close/reopen) is enough to pick up and push
+  whatever was copied while it was in the background.
 - **Background/tray on desktop** (`lib/services/desktop_window_service.dart`,
   `window_manager` + `tray_manager`) — on macOS and Windows, closing the
   window hides it instead of quitting the app; a tray/menu-bar icon
