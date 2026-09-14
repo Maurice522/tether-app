@@ -40,7 +40,7 @@ dependencies:
   path_provider: ^2.1.4
   path: ^1.9.0
   shared_preferences: ^2.3.2
-  file_picker: ^8.1.2
+  file_picker: ^12.3.0
   intl: ^0.19.0
 
 dev_dependencies:

@@ -13,9 +13,8 @@ class DevicesScreen extends StatelessWidget {
   const DevicesScreen({super.key});
 
   Future<void> _pickAndSend(BuildContext context, Device device) async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true, withReadStream: false);
-    if (result == null || result.paths.isEmpty) return;
-    final files = result.paths.whereType<String>().map(File.new).toList();
+    final picked = await FilePicker.pickFiles();
+    final files = picked.map((f) => f.path).whereType<String>().map(File.new).toList();
     if (files.isEmpty || !context.mounted) return;
 
     final appState = context.read<AppState>();

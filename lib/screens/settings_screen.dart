@@ -50,7 +50,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text(appState.settings.downloadDir),
             trailing: const Icon(Icons.folder_open),
             onTap: () async {
-              final path = await FilePicker.platform.getDirectoryPath();
+              final path = await FilePicker.getDirectoryPath();
               if (path != null) await appState.updateDownloadDir(path);
             },
           ),

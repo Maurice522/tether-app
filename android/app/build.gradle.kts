@@ -6,7 +6,10 @@ plugins {
 
 android {
     namespace = "com.mauricerana.lan_share"
-    compileSdk = flutter.compileSdkVersion
+    // flutter.compileSdkVersion currently resolves to 34, but
+    // flutter_plugin_android_lifecycle (a transitive dependency of
+    // file_picker) requires compileSdk 36+.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
