@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../models/device.dart';
+import '../util/net_log.dart';
 
 /// Discovers peers on the LAN with a small custom UDP broadcast protocol.
 ///
@@ -84,6 +85,8 @@ class DiscoveryService {
       final name = msg['name'] as String?;
       final port = msg['port'] as int?;
       if (name == null || port == null) return;
+      final isNew = !_devices.containsKey(id);
+      final changedPort = _devices[id]?.port != port;
       _devices[id] = Device(
         id: id,
         name: name,
@@ -92,20 +95,31 @@ class DiscoveryService {
         port: port,
         lastSeen: DateTime.now(),
       );
+      if (isNew || changedPort) {
+        netLog('discovery', 'saw $name ($id) at ${datagram.address.address}:$port'
+            '${isNew ? ' (new)' : ' (port changed)'}');
+      }
       _emit();
     } else if (type == 'bye') {
-      if (_devices.remove(id) != null) _emit();
+      if (_devices.remove(id) != null) {
+        netLog('discovery', 'bye from $id');
+        _emit();
+      }
     }
   }
 
   void _announce() {
+    final port = httpPort();
+    if (port == 0) {
+      netLog('discovery', 'WARNING: announcing with port=0 — transfer server not ready yet');
+    }
     _sendPacket({
       'v': 1,
       'type': 'announce',
       'id': selfId,
       'name': selfName,
       'platform': platform,
-      'port': httpPort(),
+      'port': port,
     });
   }
 

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -35,6 +37,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Future<void> _revealDownloadFolder(String path) async {
+    if (Platform.isMacOS) {
+      await Process.run('open', [path]);
+    } else if (Platform.isWindows) {
+      await Process.run('explorer', [path]);
+    } else if (Platform.isLinux) {
+      await Process.run('xdg-open', [path]);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
@@ -64,7 +76,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             title: const Text('Download folder'),
             subtitle: Text(appState.settings.downloadDir),
-            trailing: const Icon(Icons.folder_open),
+            trailing: IconButton(
+              icon: const Icon(Icons.folder_open),
+              tooltip: 'Reveal in Finder',
+              onPressed: () => _revealDownloadFolder(appState.settings.downloadDir),
+            ),
             onTap: () async {
               final path = await FilePicker.getDirectoryPath();
               if (path != null) await appState.updateDownloadDir(path);

@@ -4,6 +4,7 @@ import 'dart:io';
 
 import '../models/pairing_request.dart';
 import '../models/transfer.dart';
+import '../util/net_log.dart';
 
 /// Resolves where an incoming file's bytes should be written, and is
 /// handed the live byte stream to save. Implemented by the app layer so
@@ -49,7 +50,8 @@ class TransferServer {
 
   Future<void> start() async {
     _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
-    _server!.listen(_handle, onError: (_) {});
+    netLog('server', 'listening on port ${_server!.port}');
+    _server!.listen(_handle, onError: (e) => netLog('server', 'listen error: $e'));
   }
 
   Future<void> stop() async {
@@ -58,6 +60,7 @@ class TransferServer {
   }
 
   Future<void> _handle(HttpRequest request) async {
+    netLog('server', '${request.method} ${request.uri.path} from ${request.connectionInfo?.remoteAddress.address}');
     try {
       if (request.method == 'POST' && request.uri.path == '/offer') {
         await _handleOffer(request);
@@ -66,10 +69,12 @@ class TransferServer {
       } else if (request.method == 'POST' && request.uri.pathSegments.length == 3 && request.uri.pathSegments[0] == 'upload') {
         await _handleUpload(request);
       } else {
+        netLog('server', 'unmatched request: ${request.method} ${request.uri.path}');
         request.response.statusCode = HttpStatus.notFound;
         await request.response.close();
       }
-    } catch (_) {
+    } catch (e, st) {
+      netLog('server', 'handler error for ${request.uri.path}: $e\n$st');
       try {
         request.response.statusCode = HttpStatus.internalServerError;
         await request.response.close();
@@ -96,16 +101,20 @@ class TransferServer {
       pairingCode: json['pairingCode'] as String? ?? '',
     );
     _pending[transferId] = incoming;
+    netLog('server', 'offer $transferId from ${incoming.senderName} (${incoming.files.length} file(s), '
+        '${incoming.files.fold<int>(0, (s, f) => s + f.size)} bytes) — waiting for local decision');
     onIncomingRequest(incoming);
 
     bool accepted;
     try {
       accepted = await incoming.decision.future.timeout(decisionTimeout);
-    } catch (_) {
+    } catch (e) {
+      netLog('server', 'offer $transferId decision timed out/errored: $e');
       accepted = false;
     }
     _pending.remove(transferId);
     if (accepted) _accepted[transferId] = incoming;
+    netLog('server', 'offer $transferId decided: ${accepted ? 'accept' : 'decline'}');
 
     request.response.headers.contentType = ContentType.json;
     request.response.write(jsonEncode({'decision': accepted ? 'accept' : 'decline'}));
@@ -122,14 +131,17 @@ class TransferServer {
       requesterAddress: request.connectionInfo?.remoteAddress.address ?? 'unknown',
       code: json['code'] as String,
     );
+    netLog('server', 'pair request from ${incoming.requesterName} (${incoming.requesterAddress})');
     onIncomingPairRequest(incoming);
 
     bool accepted;
     try {
       accepted = await incoming.decision.future.timeout(decisionTimeout);
-    } catch (_) {
+    } catch (e) {
+      netLog('server', 'pair request decision timed out/errored: $e');
       accepted = false;
     }
+    netLog('server', 'pair request decided: ${accepted ? 'accept' : 'decline'}');
 
     request.response.headers.contentType = ContentType.json;
     request.response.write(jsonEncode({'decision': accepted ? 'accept' : 'decline'}));
@@ -141,13 +153,19 @@ class TransferServer {
     final fileIndex = int.tryParse(request.uri.pathSegments[2]);
     final incoming = _accepted[transferId];
     if (incoming == null || fileIndex == null || fileIndex < 0 || fileIndex >= incoming.files.length) {
+      netLog('server', 'upload rejected: transferId=$transferId fileIndex=$fileIndex '
+          'knownAccepted=${_accepted.keys.toList()}');
       request.response.statusCode = HttpStatus.forbidden;
       await request.response.close();
       return;
     }
 
     final meta = incoming.files[fileIndex];
+    netLog('server', 'upload start $transferId file $fileIndex (${meta.name}, ${meta.size} bytes)'
+        ' contentLength=${request.contentLength}');
+    final sw = Stopwatch()..start();
     await onFileSink(incoming, fileIndex, meta, request);
+    netLog('server', 'upload done $transferId file $fileIndex in ${sw.elapsedMilliseconds}ms');
 
     request.response.statusCode = HttpStatus.ok;
     await request.response.close();

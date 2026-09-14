@@ -3,6 +3,7 @@ import 'dart:io';
 
 import '../models/device.dart';
 import '../models/transfer.dart';
+import '../util/net_log.dart';
 
 class TransferOfferResult {
   final bool accepted;
@@ -29,8 +30,9 @@ class TransferClient {
     required String pairingCode,
   }) async {
     final client = HttpClient();
+    final uri = Uri.parse('http://${target.address}:${target.port}/offer');
+    netLog('client', 'sending offer $transferId to ${target.name} at $uri');
     try {
-      final uri = Uri.parse('http://${target.address}:${target.port}/offer');
       final request = await client.postUrl(uri);
       request.headers.contentType = ContentType.json;
       request.write(jsonEncode({
@@ -43,7 +45,11 @@ class TransferClient {
       final response = await request.close().timeout(offerTimeout);
       final body = await utf8.decoder.bind(response).join();
       final json = jsonDecode(body) as Map<String, dynamic>;
+      netLog('client', 'offer $transferId response: $body');
       return TransferOfferResult(accepted: json['decision'] == 'accept');
+    } catch (e) {
+      netLog('client', 'offer $transferId to $uri failed: $e');
+      rethrow;
     } finally {
       client.close(force: true);
     }
@@ -79,9 +85,11 @@ class TransferClient {
     bool Function()? isCanceled,
   }) async {
     final client = HttpClient();
+    final length = await file.length();
+    final uri = Uri.parse('http://${target.address}:${target.port}/upload/$transferId/$fileIndex');
+    netLog('client', 'uploading $transferId file $fileIndex to $uri ($length bytes)');
+    final sw = Stopwatch()..start();
     try {
-      final length = await file.length();
-      final uri = Uri.parse('http://${target.address}:${target.port}/upload/$transferId/$fileIndex');
       final request = await client.postUrl(uri);
       request.headers.contentType = ContentType.binary;
       request.contentLength = length;
@@ -96,8 +104,15 @@ class TransferClient {
         sent += chunk.length;
         onProgress(sent, length);
       }
+      netLog('client', 'upload $transferId file $fileIndex: all bytes written in '
+          '${sw.elapsedMilliseconds}ms, awaiting response...');
       final response = await request.close();
       await response.drain<void>();
+      netLog('client', 'upload $transferId file $fileIndex done, response ${response.statusCode}, '
+          'total ${sw.elapsedMilliseconds}ms');
+    } catch (e) {
+      netLog('client', 'upload $transferId file $fileIndex failed after ${sw.elapsedMilliseconds}ms: $e');
+      rethrow;
     } finally {
       client.close(force: true);
     }

@@ -16,6 +16,7 @@ import '../services/pairing_store.dart';
 import '../services/settings_store.dart';
 import '../services/transfer_client.dart' show TransferClient, TransferCanceledException;
 import '../services/transfer_server.dart';
+import '../util/net_log.dart';
 import '../util/pairing_code.dart';
 import '../util/save_path.dart';
 
@@ -235,6 +236,8 @@ class AppState extends ChangeNotifier {
   ) async {
     var canceled = false;
     _cancelHandlers[record.id] = () => canceled = true;
+    netLog('app', 'sending ${record.id} to ${target.name} (${target.address}:${target.port}), '
+        '${files.length} file(s)');
 
     try {
       final result = await _client.sendOffer(
@@ -249,6 +252,7 @@ class AppState extends ChangeNotifier {
       if (canceled) throw const TransferCanceledException();
 
       if (!result.accepted) {
+        netLog('app', '${record.id} declined by ${target.name}');
         record.status = TransferStatus.declined;
         await _finishRecord(record);
         return;
@@ -274,7 +278,9 @@ class AppState extends ChangeNotifier {
         bytesBeforeCurrentFile += fileMetas[i].size;
       }
       record.status = TransferStatus.completed;
+      netLog('app', '${record.id} completed');
     } catch (e) {
+      netLog('app', '${record.id} failed/canceled: $e');
       record.status = canceled ? TransferStatus.canceled : TransferStatus.failed;
       if (!canceled) record.error = e.toString();
     }
@@ -287,6 +293,8 @@ class AppState extends ChangeNotifier {
   // ---------------------------------------------------------------------
 
   void _onIncomingRequest(IncomingTransferRequest request) {
+    netLog('app', 'incoming request ${request.transferId} from ${request.senderName} '
+        '(${request.senderAddress}), trusted=${pairing.isTrusted(request.senderId)}');
     if (pairing.isTrusted(request.senderId)) {
       _acceptIncoming(request, trustAfter: false);
       return;
@@ -351,6 +359,7 @@ class AppState extends ChangeNotifier {
     final record = activeTransfers[request.transferId];
     final bytesBeforeCurrentFile = request.files.sublist(0, fileIndex).fold<int>(0, (s, f) => s + f.size);
     final savePath = await uniqueSavePath(settings.downloadDir, meta.name);
+    netLog('app', 'saving incoming ${request.transferId} file $fileIndex (${meta.name}, ${meta.size}b) -> $savePath');
     final sink = File(savePath).openWrite();
 
     var received = 0;
@@ -382,12 +391,15 @@ class AppState extends ChangeNotifier {
       await completer.future;
       await sink.flush();
       await sink.close();
+      netLog('app', 'incoming ${request.transferId} file $fileIndex saved, $received bytes received');
 
       if (record != null && fileIndex == request.files.length - 1) {
         record.status = TransferStatus.completed;
         await _finishRecord(record);
       }
     } catch (e) {
+      netLog('app', 'incoming ${request.transferId} file $fileIndex errored after $received/$bytesBeforeCurrentFile+'
+          '${meta.size} bytes: $e');
       await sink.close();
       if (record != null) {
         final canceled = e is TransferCanceledException;
