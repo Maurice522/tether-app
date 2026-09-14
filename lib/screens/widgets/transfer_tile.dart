@@ -1,9 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/transfer.dart';
 import '../../state/app_state.dart';
 import '../../util/format.dart';
+import '../../util/reveal.dart';
 
 class TransferTile extends StatelessWidget {
   final TransferRecord record;
@@ -15,6 +18,8 @@ class TransferTile extends StatelessWidget {
     final isIncoming = record.direction == TransferDirection.incoming;
     final isActive =
         record.status == TransferStatus.pendingApproval || record.status == TransferStatus.transferring;
+    final canReveal =
+        !isActive && isIncoming && record.status == TransferStatus.completed && record.savedPaths.isNotEmpty;
     final title = record.files.length == 1
         ? record.files.first.name
         : '${record.files.length} files';
@@ -48,7 +53,20 @@ class TransferTile extends StatelessWidget {
               tooltip: 'Cancel',
               onPressed: () => context.read<AppState>().cancelTransfer(record.id),
             )
-          : Text(formatBytes(record.totalBytes), style: Theme.of(context).textTheme.bodySmall),
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(formatBytes(record.totalBytes), style: Theme.of(context).textTheme.bodySmall),
+                if (canReveal)
+                  IconButton(
+                    icon: const Icon(Icons.folder_open, size: 20),
+                    tooltip: 'Show in folder',
+                    onPressed: () => record.savedPaths.length == 1
+                        ? revealFile(record.savedPaths.first)
+                        : openFolder(File(record.savedPaths.first).parent.path),
+                  ),
+              ],
+            ),
     );
   }
 

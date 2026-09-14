@@ -392,6 +392,7 @@ class AppState extends ChangeNotifier {
       await sink.flush();
       await sink.close();
       netLog('app', 'incoming ${request.transferId} file $fileIndex saved, $received bytes received');
+      record?.savedPaths.add(savePath);
 
       if (record != null && fileIndex == request.files.length - 1) {
         record.status = TransferStatus.completed;

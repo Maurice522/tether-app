@@ -1,10 +1,9 @@
-import 'dart:io';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../util/reveal.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -35,16 +34,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Device name saved'), duration: Duration(seconds: 2)),
     );
-  }
-
-  Future<void> _revealDownloadFolder(String path) async {
-    if (Platform.isMacOS) {
-      await Process.run('open', [path]);
-    } else if (Platform.isWindows) {
-      await Process.run('explorer', [path]);
-    } else if (Platform.isLinux) {
-      await Process.run('xdg-open', [path]);
-    }
   }
 
   @override
@@ -79,7 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: IconButton(
               icon: const Icon(Icons.folder_open),
               tooltip: 'Reveal in Finder',
-              onPressed: () => _revealDownloadFolder(appState.settings.downloadDir),
+              onPressed: () => openFolder(appState.settings.downloadDir),
             ),
             onTap: () async {
               final path = await FilePicker.getDirectoryPath();

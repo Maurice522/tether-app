@@ -70,6 +70,11 @@ class TransferRecord {
   /// display the same code shown in the receiver's accept dialog.
   final String? pairingCode;
 
+  /// Actual on-disk path(s) for an incoming transfer's saved files, in
+  /// file order — lets the UI reveal exactly what was written, since a
+  /// name clash may have renamed it (see uniqueSavePath).
+  final List<String> savedPaths;
+
   TransferRecord({
     required this.id,
     required this.direction,
@@ -82,7 +87,9 @@ class TransferRecord {
     this.finishedAt,
     this.error,
     this.pairingCode,
-  }) : startedAt = startedAt ?? DateTime.now();
+    List<String>? savedPaths,
+  })  : startedAt = startedAt ?? DateTime.now(),
+        savedPaths = savedPaths ?? [];
 
   int get totalBytes => files.fold(0, (sum, f) => sum + f.size);
 
@@ -99,6 +106,7 @@ class TransferRecord {
         'startedAt': startedAt.toIso8601String(),
         'finishedAt': finishedAt?.toIso8601String(),
         'error': error,
+        'savedPaths': savedPaths,
       };
 
   factory TransferRecord.fromJson(Map<String, dynamic> json) => TransferRecord(
@@ -114,5 +122,6 @@ class TransferRecord {
         startedAt: DateTime.parse(json['startedAt'] as String),
         finishedAt: json['finishedAt'] == null ? null : DateTime.parse(json['finishedAt'] as String),
         error: json['error'] as String?,
+        savedPaths: (json['savedPaths'] as List?)?.map((e) => e as String).toList(),
       );
 }
