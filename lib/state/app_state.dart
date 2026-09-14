@@ -14,7 +14,7 @@ import '../services/discovery_service.dart';
 import '../services/history_store.dart';
 import '../services/pairing_store.dart';
 import '../services/settings_store.dart';
-import '../services/transfer_client.dart';
+import '../services/transfer_client.dart' show TransferClient, TransferCanceledException;
 import '../services/transfer_server.dart';
 import '../util/pairing_code.dart';
 import '../util/save_path.dart';
@@ -43,6 +43,7 @@ class AppState extends ChangeNotifier {
   final Map<String, TransferRecord> activeTransfers = {};
   List<TransferRecord> completedTransfers = [];
   final Map<String, PairingAttempt> pairingAttempts = {};
+  final Map<String, void Function()> _cancelHandlers = {};
 
   StreamSubscription<List<Device>>? _devicesSub;
   bool _ready = false;
@@ -232,6 +233,9 @@ class AppState extends ChangeNotifier {
     TransferRecord record,
     String code,
   ) async {
+    var canceled = false;
+    _cancelHandlers[record.id] = () => canceled = true;
+
     try {
       final result = await _client.sendOffer(
         target: target,
@@ -241,6 +245,8 @@ class AppState extends ChangeNotifier {
         files: fileMetas,
         pairingCode: code,
       );
+
+      if (canceled) throw const TransferCanceledException();
 
       if (!result.accepted) {
         record.status = TransferStatus.declined;
@@ -253,11 +259,13 @@ class AppState extends ChangeNotifier {
 
       var bytesBeforeCurrentFile = 0;
       for (var i = 0; i < files.length; i++) {
+        if (canceled) throw const TransferCanceledException();
         await _client.uploadFile(
           target: target,
           transferId: record.id,
           fileIndex: i,
           file: files[i],
+          isCanceled: () => canceled,
           onProgress: (sent, total) {
             record.bytesTransferred = bytesBeforeCurrentFile + sent;
             notifyListeners();
@@ -267,9 +275,10 @@ class AppState extends ChangeNotifier {
       }
       record.status = TransferStatus.completed;
     } catch (e) {
-      record.status = TransferStatus.failed;
-      record.error = e.toString();
+      record.status = canceled ? TransferStatus.canceled : TransferStatus.failed;
+      if (!canceled) record.error = e.toString();
     }
+    _cancelHandlers.remove(record.id);
     await _finishRecord(record);
   }
 
@@ -327,6 +336,12 @@ class AppState extends ChangeNotifier {
     // the record above is what the UI observes for progress.
   }
 
+  /// How long an active transfer may go without any bytes arriving before
+  /// it's automatically failed — otherwise a dropped connection (Wi-Fi
+  /// hiccup, peer app closed) leaves the UI stuck on "In progress" forever
+  /// with no feedback and no way out.
+  static const Duration _stallTimeout = Duration(seconds: 20);
+
   Future<void> _saveIncomingFile(
     IncomingTransferRequest request,
     int fileIndex,
@@ -337,14 +352,34 @@ class AppState extends ChangeNotifier {
     final bytesBeforeCurrentFile = request.files.sublist(0, fileIndex).fold<int>(0, (s, f) => s + f.size);
     final savePath = await uniqueSavePath(settings.downloadDir, meta.name);
     final sink = File(savePath).openWrite();
-    try {
-      await for (final chunk in data) {
+
+    var received = 0;
+    final completer = Completer<void>();
+    late final StreamSubscription<List<int>> sub;
+    sub = data.timeout(_stallTimeout).listen(
+      (chunk) {
         sink.add(chunk);
+        received += chunk.length;
         if (record != null) {
-          record.bytesTransferred = bytesBeforeCurrentFile + chunk.length;
+          record.bytesTransferred = bytesBeforeCurrentFile + received;
           notifyListeners();
         }
-      }
+      },
+      onDone: () {
+        if (!completer.isCompleted) completer.complete();
+      },
+      onError: (Object e) {
+        if (!completer.isCompleted) completer.completeError(e);
+      },
+      cancelOnError: true,
+    );
+    _cancelHandlers[request.transferId] = () {
+      sub.cancel();
+      if (!completer.isCompleted) completer.completeError(const TransferCanceledException());
+    };
+
+    try {
+      await completer.future;
       await sink.flush();
       await sink.close();
 
@@ -355,11 +390,30 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       await sink.close();
       if (record != null) {
-        record.status = TransferStatus.failed;
-        record.error = e.toString();
+        final canceled = e is TransferCanceledException;
+        record.status = canceled ? TransferStatus.canceled : TransferStatus.failed;
+        if (!canceled) record.error = e is TimeoutException ? 'Connection stalled — no data received' : e.toString();
         await _finishRecord(record);
       }
       rethrow;
+    } finally {
+      _cancelHandlers.remove(request.transferId);
+    }
+  }
+
+  /// Cancels an active transfer, best-effort: stops an in-progress upload
+  /// (outgoing) or download (incoming) as soon as the running loop notices,
+  /// or finalizes immediately if nothing is actively streaming yet.
+  void cancelTransfer(String transferId) {
+    final handler = _cancelHandlers.remove(transferId);
+    if (handler != null) {
+      handler();
+      return;
+    }
+    final record = activeTransfers[transferId];
+    if (record != null) {
+      record.status = TransferStatus.canceled;
+      _finishRecord(record);
     }
   }
 

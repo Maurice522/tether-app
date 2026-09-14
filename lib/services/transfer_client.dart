@@ -9,6 +9,13 @@ class TransferOfferResult {
   const TransferOfferResult({required this.accepted});
 }
 
+/// Thrown to unwind an in-progress upload when the user cancels it locally.
+class TransferCanceledException implements Exception {
+  const TransferCanceledException();
+  @override
+  String toString() => 'Canceled by user';
+}
+
 /// Sends offers and file bytes to a remote peer's [TransferServer].
 class TransferClient {
   static const Duration offerTimeout = Duration(seconds: 65);
@@ -69,6 +76,7 @@ class TransferClient {
     required int fileIndex,
     required File file,
     required void Function(int sent, int total) onProgress,
+    bool Function()? isCanceled,
   }) async {
     final client = HttpClient();
     try {
@@ -81,6 +89,9 @@ class TransferClient {
       int sent = 0;
       onProgress(0, length);
       await for (final chunk in file.openRead()) {
+        if (isCanceled?.call() ?? false) {
+          throw const TransferCanceledException();
+        }
         request.add(chunk);
         sent += chunk.length;
         onProgress(sent, length);

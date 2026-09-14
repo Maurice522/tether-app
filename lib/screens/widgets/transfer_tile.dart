@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../../models/transfer.dart';
+import '../../state/app_state.dart';
 import '../../util/format.dart';
 
 class TransferTile extends StatelessWidget {
@@ -11,6 +13,8 @@ class TransferTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isIncoming = record.direction == TransferDirection.incoming;
+    final isActive =
+        record.status == TransferStatus.pendingApproval || record.status == TransferStatus.transferring;
     final title = record.files.length == 1
         ? record.files.first.name
         : '${record.files.length} files';
@@ -38,7 +42,13 @@ class TransferTile extends StatelessWidget {
               ),
             )
           : Text('$subtitle · ${_statusLabel(record.status)}'),
-      trailing: Text(formatBytes(record.totalBytes), style: Theme.of(context).textTheme.bodySmall),
+      trailing: isActive
+          ? IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Cancel',
+              onPressed: () => context.read<AppState>().cancelTransfer(record.id),
+            )
+          : Text(formatBytes(record.totalBytes), style: Theme.of(context).textTheme.bodySmall),
     );
   }
 
