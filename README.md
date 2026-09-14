@@ -69,6 +69,22 @@ Implemented (Phases 1–4 core logic):
   lifecycle and forces one immediate check on resume, so switching back
   to LAN Share (not a full close/reopen) is enough to pick up and push
   whatever was copied while it was in the background.
+- **Background survival on Android** (`android/app/src/main/kotlin/.../LanShareForegroundService.kt`,
+  started from `MainActivity.onCreate`) — without this, Android froze the
+  whole process (discovery, the transfer server, everything) shortly
+  after the app was backgrounded, which is why devices "disconnected"
+  and clipboard sync stopped even though nothing in the Dart code had
+  changed. A minimal foreground service (no Dart/background-isolate work
+  of its own — it only exists to hold foreground-service privilege) now
+  keeps the process alive while backgrounded, with a persistent low-
+  priority notification ("LAN Share is running") as the unavoidable
+  visible side effect Android requires for this. Requests
+  `POST_NOTIFICATIONS` at launch on Android 13+. Uses the `dataSync`
+  foreground service type, which Android 15+ caps at ~6 cumulative hours
+  while unplugged — long enough for normal use, but a very long
+  background stretch on a new device could still eventually disconnect;
+  not yet confirmed on a real device since this repo has no attached
+  Android hardware to test against live.
 - **Background/tray on desktop** (`lib/services/desktop_window_service.dart`,
   `window_manager` + `tray_manager`) — on macOS and Windows, closing the
   window hides it instead of quitting the app; a tray/menu-bar icon
