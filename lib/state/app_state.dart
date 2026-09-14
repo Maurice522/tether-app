@@ -636,10 +636,15 @@ class AppState extends ChangeNotifier {
       return;
     }
     if (text == null || text.isEmpty || text == _lastClipboardText) return;
-    _lastClipboardText = text;
 
     try {
       await _client.sendClipboard(target: target, requesterId: settings.deviceId, text: text);
+      // Only mark as delivered once the push actually succeeds — otherwise
+      // a single transient failure (peer briefly unreachable, e.g. right
+      // after toggling sync on) would silently mark this text as already
+      // synced and it would never be retried, even though the peer never
+      // got it.
+      _lastClipboardText = text;
       if (clipboardSyncError != null) {
         clipboardSyncError = null;
         notifyListeners();
@@ -652,6 +657,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _onClipboardReceived(String text) {
+    if (!settings.clipboardSyncEnabled) return;
     if (text.isEmpty || text == _lastClipboardText) return;
     _lastClipboardText = text;
     netLog('app', 'applying clipboard push (${text.length} chars)');
