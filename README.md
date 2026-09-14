@@ -38,9 +38,32 @@ Implemented (Phases 1–4 core logic):
   inline pairing code and an accept/decline prompt, for occasional
   transfers without formally pairing.
 - **App shell** (`lib/screens/`) — Nearby Devices list with per-device
-  Pair/Send, an Activity tab (active transfers + persisted history), and
-  Settings (device name with an explicit Save button, download folder,
-  theme, paired device management).
+  Pair/Send and a manual refresh (re-announces immediately instead of
+  waiting for the next broadcast tick), an Activity tab (active transfers
+  + persisted history, each completed incoming item has a "show in
+  folder" action that reveals the exact saved file), and Settings (device
+  name with an explicit Save button, download folder, theme, clipboard
+  sync, paired device management).
+- **Remote browsing** (`lib/screens/browse_screen.dart`,
+  `remote_folder_screen.dart`, `GET /browse`, `GET /fetch`) — a new
+  **Browse** tab lets you open a paired, currently-online device's shared
+  folder (the same folder its incoming transfers are saved into),
+  navigate into subfolders, and pull any file straight into your own
+  shared folder — no per-file prompt, since pairing already established
+  the trust. Deliberately scoped to that one folder rather than the whole
+  filesystem: a sandboxed macOS build has no broader file access without
+  the user granting it per-folder, and a fixed root keeps this feature's
+  blast radius obvious.
+- **Clipboard sync** (`POST /clipboard`, `AppState._pollClipboard`) — pick
+  one paired device in Settings and turn sync on to mirror clipboard text
+  both ways, polled every 2s (plain Dart `Clipboard.getData`, not a native
+  watcher plugin, so it behaves identically on all three platforms without
+  more native code to build-test blind for Windows). **Android caveat**:
+  Android 10+ blocks any backgrounded app from reading the system
+  clipboard — a deliberate OS privacy rule, not a bug here — so on Android
+  a new copy is only picked up while LAN Share is open and in front;
+  receiving a push from the other device still works any time the app's
+  process is alive.
 - **Background/tray on desktop** (`lib/services/desktop_window_service.dart`,
   `window_manager` + `tray_manager`) — on macOS and Windows, closing the
   window hides it instead of quitting the app; a tray/menu-bar icon
@@ -89,6 +112,14 @@ Not yet done (see original plan's Phase 4/5):
 - `POST /pair` — body: `{"id","name","code"}`. Same accept/decline
   response shape as `/offer`. Accepting always trusts the requester on
   both sides; nothing is transferred as part of pairing itself.
+- `GET /browse?requesterId=<id>&path=<relative>` — lists the immediate
+  children of `path` ("" for the root) in the shared folder, as a JSON
+  array of `{"name","isDir","size","modified"}`. `403` if `requesterId`
+  isn't paired.
+- `GET /fetch?requesterId=<id>&path=<relative>` — streams one file's raw
+  bytes from the shared folder. Same trust check as `/browse`.
+- `POST /clipboard` — body: `{"requesterId","text"}`. Applies `text` to
+  the local clipboard if `requesterId` is paired; otherwise `403`.
 
 There's no TLS — this is intentionally a trusted-LAN tool, not something to
 run over an untrusted network segment.

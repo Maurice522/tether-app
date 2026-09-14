@@ -94,6 +94,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: Text('Clipboard sync', style: Theme.of(context).textTheme.labelLarge),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              trustedIds.isEmpty
+                  ? 'Pair with a device first to sync clipboards with it.'
+                  : 'Copy on one device, paste on the other — works both ways. On Android, '
+                      'new copies are only picked up while LAN Share is open (an Android privacy '
+                      'restriction); receiving works any time the app is running.',
+              style: const TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+          ),
+          if (trustedIds.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: DropdownButtonFormField<String>(
+                initialValue: trustedIds.contains(appState.settings.clipboardSyncDeviceId)
+                    ? appState.settings.clipboardSyncDeviceId
+                    : null,
+                decoration: const InputDecoration(labelText: 'Sync with', border: OutlineInputBorder()),
+                items: trustedIds
+                    .map((id) => DropdownMenuItem(value: id, child: Text(appState.pairing.nameFor(id) ?? id)))
+                    .toList(),
+                onChanged: (id) {
+                  if (id == null) return;
+                  appState.setClipboardSync(enabled: appState.settings.clipboardSyncEnabled, deviceId: id);
+                },
+              ),
+            ),
+            SwitchListTile(
+              title: const Text('Sync clipboard'),
+              value: appState.settings.clipboardSyncEnabled && appState.settings.clipboardSyncDeviceId != null,
+              onChanged: appState.settings.clipboardSyncDeviceId == null
+                  ? null
+                  : (v) => appState.setClipboardSync(enabled: v),
+            ),
+            if (appState.clipboardSyncError != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text(appState.clipboardSyncError!, style: const TextStyle(color: Colors.orange, fontSize: 12)),
+              ),
+          ],
+          const Divider(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
             child: Text('Paired devices', style: Theme.of(context).textTheme.labelLarge),
           ),
           const Padding(

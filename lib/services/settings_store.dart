@@ -7,6 +7,8 @@ class SettingsStore {
   static const _keyDeviceName = 'device_name';
   static const _keyDownloadDir = 'download_dir';
   static const _keyThemeMode = 'theme_mode'; // system | light | dark
+  static const _keyClipboardSyncEnabled = 'clipboard_sync_enabled';
+  static const _keyClipboardSyncDeviceId = 'clipboard_sync_device_id';
 
   final SharedPreferences _prefs;
 
@@ -37,4 +39,12 @@ class SettingsStore {
 
   String get themeMode => _prefs.getString(_keyThemeMode) ?? 'system';
   Future<void> setThemeMode(String mode) => _prefs.setString(_keyThemeMode, mode);
+
+  bool get clipboardSyncEnabled => _prefs.getBool(_keyClipboardSyncEnabled) ?? false;
+  Future<void> setClipboardSyncEnabled(bool enabled) => _prefs.setBool(_keyClipboardSyncEnabled, enabled);
+
+  String? get clipboardSyncDeviceId => _prefs.getString(_keyClipboardSyncDeviceId);
+  Future<void> setClipboardSyncDeviceId(String? deviceId) => deviceId == null
+      ? _prefs.remove(_keyClipboardSyncDeviceId)
+      : _prefs.setString(_keyClipboardSyncDeviceId, deviceId);
 }

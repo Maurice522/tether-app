@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../models/device.dart';
+import '../models/remote_entry.dart';
 import '../models/transfer.dart';
 import '../util/net_log.dart';
 
@@ -113,6 +114,109 @@ class TransferClient {
     } catch (e) {
       netLog('client', 'upload $transferId file $fileIndex failed after ${sw.elapsedMilliseconds}ms: $e');
       rethrow;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Lists the immediate children of [path] ("" for the root) in [target]'s
+  /// shared folder. Only succeeds if [target] has paired with [requesterId].
+  Future<List<RemoteEntry>> browse({
+    required Device target,
+    required String requesterId,
+    required String path,
+  }) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse('http://${target.address}:${target.port}/browse')
+          .replace(queryParameters: {'requesterId': requesterId, 'path': path});
+      netLog('client', 'browsing "$path" on ${target.name}');
+      final request = await client.getUrl(uri);
+      final response = await request.close().timeout(const Duration(seconds: 15));
+      if (response.statusCode == HttpStatus.forbidden) {
+        throw Exception('Not paired with ${target.name}');
+      }
+      if (response.statusCode != HttpStatus.ok) {
+        throw Exception('Browse failed (${response.statusCode})');
+      }
+      final body = await utf8.decoder.bind(response).join();
+      final list = jsonDecode(body) as List;
+      return list.map((e) => RemoteEntry.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (e) {
+      netLog('client', 'browse "$path" on ${target.name} failed: $e');
+      rethrow;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Downloads one remote file at [remotePath] from [target]'s shared
+  /// folder, streaming it straight to [savePath].
+  Future<void> fetchFile({
+    required Device target,
+    required String requesterId,
+    required String remotePath,
+    required String savePath,
+    required void Function(int received, int total) onProgress,
+    bool Function()? isCanceled,
+  }) async {
+    final client = HttpClient();
+    final sw = Stopwatch()..start();
+    try {
+      final uri = Uri.parse('http://${target.address}:${target.port}/fetch')
+          .replace(queryParameters: {'requesterId': requesterId, 'path': remotePath});
+      netLog('client', 'fetching "$remotePath" from ${target.name} -> $savePath');
+      final request = await client.getUrl(uri);
+      final response = await request.close().timeout(const Duration(seconds: 30));
+      if (response.statusCode == HttpStatus.forbidden) {
+        throw Exception('Not paired with ${target.name}');
+      }
+      if (response.statusCode != HttpStatus.ok) {
+        throw Exception('Fetch failed (${response.statusCode})');
+      }
+      final total = response.contentLength;
+      final sink = File(savePath).openWrite();
+      var received = 0;
+      onProgress(0, total);
+      try {
+        await for (final chunk in response) {
+          if (isCanceled?.call() ?? false) {
+            throw const TransferCanceledException();
+          }
+          sink.add(chunk);
+          received += chunk.length;
+          onProgress(received, total);
+        }
+        await sink.flush();
+      } finally {
+        await sink.close();
+      }
+      netLog('client', 'fetch "$remotePath" done, $received bytes in ${sw.elapsedMilliseconds}ms');
+    } catch (e) {
+      netLog('client', 'fetch "$remotePath" from ${target.name} failed after ${sw.elapsedMilliseconds}ms: $e');
+      rethrow;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Pushes the local clipboard's text to a paired [target] device.
+  Future<void> sendClipboard({
+    required Device target,
+    required String requesterId,
+    required String text,
+  }) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse('http://${target.address}:${target.port}/clipboard');
+      final request = await client.postUrl(uri);
+      request.headers.contentType = ContentType.json;
+      request.write(jsonEncode({'requesterId': requesterId, 'text': text}));
+      final response = await request.close().timeout(const Duration(seconds: 10));
+      await response.drain<void>();
+      if (response.statusCode != HttpStatus.ok) {
+        throw Exception('Clipboard push failed (${response.statusCode})');
+      }
     } finally {
       client.close(force: true);
     }

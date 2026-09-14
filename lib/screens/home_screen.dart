@@ -5,6 +5,7 @@ import '../models/pairing_request.dart';
 import '../models/transfer.dart';
 import '../state/app_state.dart';
 import 'activity_screen.dart';
+import 'browse_screen.dart';
 import 'devices_screen.dart';
 import 'settings_screen.dart';
 import 'widgets/incoming_pair_dialog.dart';
@@ -22,7 +23,7 @@ class _HomeScreenState extends State<HomeScreen> {
   IncomingTransferRequest? _dialogShownFor;
   IncomingPairRequest? _pairDialogShownFor;
 
-  static const _screens = [DevicesScreen(), ActivityScreen(), SettingsScreen()];
+  static const _screens = [DevicesScreen(), BrowseScreen(), ActivityScreen(), SettingsScreen()];
 
   @override
   Widget build(BuildContext context) {
@@ -61,6 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
         onDestinationSelected: (i) => setState(() => _index = i),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.devices_outlined), selectedIcon: Icon(Icons.devices), label: 'Devices'),
+          NavigationDestination(icon: Icon(Icons.folder_shared_outlined), selectedIcon: Icon(Icons.folder_shared), label: 'Browse'),
           NavigationDestination(icon: Icon(Icons.swap_vert_outlined), selectedIcon: Icon(Icons.swap_vert), label: 'Activity'),
           NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
         ],

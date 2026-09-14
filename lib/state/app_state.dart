@@ -3,11 +3,13 @@ import 'dart:io';
 
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
 import '../models/device.dart';
 import '../models/pairing_request.dart';
+import '../models/remote_entry.dart';
 import '../models/transfer.dart';
 import '../services/desktop_window_service.dart';
 import '../services/discovery_service.dart';
@@ -46,6 +48,10 @@ class AppState extends ChangeNotifier {
   final Map<String, PairingAttempt> pairingAttempts = {};
   final Map<String, void Function()> _cancelHandlers = {};
 
+  Timer? _clipboardTimer;
+  String? _lastClipboardText;
+  String? clipboardSyncError;
+
   StreamSubscription<List<Device>>? _devicesSub;
   bool _ready = false;
   bool get ready => _ready;
@@ -63,6 +69,10 @@ class AppState extends ChangeNotifier {
       onIncomingRequest: _onIncomingRequest,
       onIncomingPairRequest: _onIncomingPairRequest,
       onFileSink: _saveIncomingFile,
+      isTrusted: (id) => pairing.isTrusted(id),
+      onListDir: _listRemoteDir,
+      onOpenFile: _openRemoteFile,
+      onClipboard: _onClipboardReceived,
     );
     await server.start();
     _server = server;
@@ -82,6 +92,7 @@ class AppState extends ChangeNotifier {
 
     _ready = true;
     notifyListeners();
+    _restartClipboardSync();
   }
 
   @override
@@ -89,7 +100,15 @@ class AppState extends ChangeNotifier {
     _devicesSub?.cancel();
     _discovery?.stop();
     _server?.stop();
+    _clipboardTimer?.cancel();
     super.dispose();
+  }
+
+  /// Re-broadcasts a discovery announce right now instead of waiting for
+  /// the next periodic tick, and prunes any devices already gone stale —
+  /// backs the pull-to-refresh / refresh button on the Nearby screen.
+  void refreshDevices() {
+    _discovery?.refreshSelf();
   }
 
   // ---------------------------------------------------------------------
@@ -442,6 +461,201 @@ class AppState extends ChangeNotifier {
     await history.clear();
     completedTransfers = [];
     notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------
+  // Remote browsing
+  //
+  // A paired device can browse the *shared folder* (the same folder
+  // incoming transfers are saved into) of another paired device, and pull
+  // files from it directly — no per-file prompt, since pairing is already
+  // the trust boundary. This intentionally does not expose the whole
+  // filesystem: the shared folder is the only root, both because a
+  // sandboxed macOS build has no broader file access without the user
+  // granting it per-folder, and because a fixed root keeps the feature's
+  // blast radius obvious and bounded.
+  // ---------------------------------------------------------------------
+
+  /// Lists the immediate children of [path] ("" for the root) in a peer's
+  /// shared folder.
+  Future<List<RemoteEntry>> browseDevice(Device device, String path) {
+    return _client.browse(target: device, requesterId: settings.deviceId, path: path);
+  }
+
+  /// Starts downloading [entry] (found at [parentPath] in [device]'s shared
+  /// folder) into this device's own shared folder. Returns immediately with
+  /// a transfer id; progress/outcome show up in [activeTransfers] /
+  /// [completedTransfers] exactly like any other incoming transfer.
+  String startDownload(Device device, RemoteEntry entry, String parentPath) {
+    final transferId = _uuid.v4();
+    final record = TransferRecord(
+      id: transferId,
+      direction: TransferDirection.incoming,
+      peerName: device.name,
+      peerId: device.id,
+      files: [FileMeta(name: entry.name, size: entry.size)],
+      status: TransferStatus.transferring,
+    );
+    activeTransfers[transferId] = record;
+    notifyListeners();
+
+    _runBrowseDownload(device, entry, parentPath, record);
+    return transferId;
+  }
+
+  Future<void> _runBrowseDownload(
+    Device device,
+    RemoteEntry entry,
+    String parentPath,
+    TransferRecord record,
+  ) async {
+    var canceled = false;
+    _cancelHandlers[record.id] = () => canceled = true;
+    final remotePath = parentPath.isEmpty ? entry.name : '$parentPath/${entry.name}';
+    netLog('app', 'downloading "$remotePath" from ${device.name} (${record.id})');
+
+    try {
+      final savePath = await uniqueSavePath(settings.downloadDir, entry.name);
+      await _client.fetchFile(
+        target: device,
+        requesterId: settings.deviceId,
+        remotePath: remotePath,
+        savePath: savePath,
+        isCanceled: () => canceled,
+        onProgress: (received, total) {
+          record.bytesTransferred = received;
+          notifyListeners();
+        },
+      );
+      record.status = TransferStatus.completed;
+      record.savedPaths.add(savePath);
+      netLog('app', 'download ${record.id} completed');
+    } catch (e) {
+      netLog('app', 'download ${record.id} failed/canceled: $e');
+      record.status = canceled ? TransferStatus.canceled : TransferStatus.failed;
+      if (!canceled) record.error = e.toString();
+    }
+    _cancelHandlers.remove(record.id);
+    await _finishRecord(record);
+  }
+
+  /// Resolves a "/"-separated relative path against the shared folder,
+  /// rejecting anything that would escape it (no "..", no absolute paths).
+  String _resolveSharedPath(String relativePath) {
+    final segments = relativePath.split('/').where((s) => s.isNotEmpty);
+    if (segments.any((s) => s == '.' || s == '..')) {
+      throw Exception('Invalid path');
+    }
+    final root = p.normalize(settings.downloadDir);
+    final resolved = p.normalize(p.joinAll([root, ...segments]));
+    if (resolved != root && !p.isWithin(root, resolved)) {
+      throw Exception('Invalid path');
+    }
+    return resolved;
+  }
+
+  Future<List<RemoteEntry>> _listRemoteDir(String relativePath) async {
+    final dirPath = _resolveSharedPath(relativePath);
+    final dir = Directory(dirPath);
+    if (!await dir.exists()) return [];
+    final entries = <RemoteEntry>[];
+    await for (final entity in dir.list(followLinks: false)) {
+      final stat = await entity.stat();
+      entries.add(RemoteEntry(
+        name: p.basename(entity.path),
+        isDir: entity is Directory,
+        size: entity is File ? stat.size : 0,
+        modified: stat.modified,
+      ));
+    }
+    entries.sort((a, b) {
+      if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+    return entries;
+  }
+
+  File _openRemoteFile(String relativePath) {
+    return File(_resolveSharedPath(relativePath));
+  }
+
+  // ---------------------------------------------------------------------
+  // Clipboard sync
+  //
+  // While enabled, polls the local clipboard every couple seconds and
+  // pushes any change to the chosen paired device, and applies whatever
+  // that device pushes back here — a two-way sync with no per-copy
+  // prompt, same trust boundary as browsing/sending. Polling (rather than
+  // a native "clipboard changed" listener) is deliberate: it's plain
+  // Dart, so it behaves identically on macOS/Windows/Android without
+  // adding another native plugin to a toolchain we can't build-test for
+  // Windows here.
+  //
+  // Caveat that no amount of extra code here can remove: Android 10+
+  // blocks any app from reading the system clipboard while it isn't the
+  // focused foreground app (a deliberate OS privacy rule against silent
+  // clipboard snooping). So on Android this device can only *detect* a
+  // new copy while LAN Share is actually open and in front; it can still
+  // *receive* a push from the other device and apply it any time this
+  // app's process is alive.
+  // ---------------------------------------------------------------------
+
+  static const Duration _clipboardPollInterval = Duration(seconds: 2);
+
+  /// Turns clipboard sync with [deviceId] on or off and persists the
+  /// choice. Pass `null` for [deviceId] to just persist the enabled flag
+  /// (e.g. re-enabling after it was already configured).
+  Future<void> setClipboardSync({required bool enabled, String? deviceId}) async {
+    await settings.setClipboardSyncEnabled(enabled);
+    if (deviceId != null) await settings.setClipboardSyncDeviceId(deviceId);
+    clipboardSyncError = null;
+    _restartClipboardSync();
+    notifyListeners();
+  }
+
+  void _restartClipboardSync() {
+    _clipboardTimer?.cancel();
+    _clipboardTimer = null;
+    if (!settings.clipboardSyncEnabled || settings.clipboardSyncDeviceId == null) return;
+    _lastClipboardText = null;
+    _clipboardTimer = Timer.periodic(_clipboardPollInterval, (_) => _pollClipboard());
+  }
+
+  Future<void> _pollClipboard() async {
+    final targetId = settings.clipboardSyncDeviceId;
+    if (targetId == null) return;
+    final matches = devices.where((d) => d.id == targetId);
+    if (matches.isEmpty) return; // Sync partner not currently reachable; try again next tick.
+    final target = matches.first;
+
+    String? text;
+    try {
+      text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+    } catch (e) {
+      netLog('app', 'clipboard read failed: $e');
+      return;
+    }
+    if (text == null || text.isEmpty || text == _lastClipboardText) return;
+    _lastClipboardText = text;
+
+    try {
+      await _client.sendClipboard(target: target, requesterId: settings.deviceId, text: text);
+      if (clipboardSyncError != null) {
+        clipboardSyncError = null;
+        notifyListeners();
+      }
+    } catch (e) {
+      netLog('app', 'clipboard push to ${target.name} failed: $e');
+      clipboardSyncError = 'Could not reach ${target.name}';
+      notifyListeners();
+    }
+  }
+
+  void _onClipboardReceived(String text) {
+    if (text.isEmpty || text == _lastClipboardText) return;
+    _lastClipboardText = text;
+    netLog('app', 'applying clipboard push (${text.length} chars)');
+    Clipboard.setData(ClipboardData(text: text));
   }
 
   // ---------------------------------------------------------------------

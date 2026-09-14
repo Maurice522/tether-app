@@ -43,41 +43,53 @@ class DevicesScreen extends StatelessWidget {
     final devices = appState.devices;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Nearby Devices')),
-      body: devices.isEmpty
-          ? const _EmptyState()
-          : ListView.separated(
-              itemCount: devices.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (ctx, index) {
-                final device = devices[index];
-                final trusted = appState.isSenderTrusted(device.id);
-                return ListTile(
-                  leading: Text(platformIcon(device.platform), style: const TextStyle(fontSize: 28)),
-                  title: Text(device.name),
-                  subtitle: Text('${device.address}${trusted ? ' · Paired' : ''}'),
-                  trailing: trusted
-                      ? FilledButton.tonal(
-                          onPressed: () => _pickAndSend(context, device),
-                          child: const Text('Send'),
-                        )
-                      : Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            OutlinedButton(
-                              onPressed: () => _pair(context, device),
-                              child: const Text('Pair'),
-                            ),
-                            const SizedBox(width: 8),
-                            FilledButton.tonal(
-                              onPressed: () => _pickAndSend(context, device),
-                              child: const Text('Send'),
-                            ),
-                          ],
-                        ),
-                );
-              },
-            ),
+      appBar: AppBar(
+        title: const Text('Nearby Devices'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
+            onPressed: () => appState.refreshDevices(),
+          ),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async => appState.refreshDevices(),
+        child: devices.isEmpty
+            ? const _EmptyState()
+            : ListView.separated(
+                itemCount: devices.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (ctx, index) {
+                  final device = devices[index];
+                  final trusted = appState.isSenderTrusted(device.id);
+                  return ListTile(
+                    leading: Text(platformIcon(device.platform), style: const TextStyle(fontSize: 28)),
+                    title: Text(device.name),
+                    subtitle: Text('${device.address}${trusted ? ' · Paired' : ''}'),
+                    trailing: trusted
+                        ? FilledButton.tonal(
+                            onPressed: () => _pickAndSend(context, device),
+                            child: const Text('Send'),
+                          )
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              OutlinedButton(
+                                onPressed: () => _pair(context, device),
+                                child: const Text('Pair'),
+                              ),
+                              const SizedBox(width: 8),
+                              FilledButton.tonal(
+                                onPressed: () => _pickAndSend(context, device),
+                                child: const Text('Send'),
+                              ),
+                            ],
+                          ),
+                  );
+                },
+              ),
+      ),
     );
   }
 }
