@@ -625,7 +625,17 @@ class AppState extends ChangeNotifier {
     final targetId = settings.clipboardSyncDeviceId;
     if (targetId == null) return;
     final matches = devices.where((d) => d.id == targetId);
-    if (matches.isEmpty) return; // Sync partner not currently reachable; try again next tick.
+    if (matches.isEmpty) {
+      // Sync partner not currently in the discovered-devices list (out of
+      // range, Wi-Fi off, or its app isn't running) — surface that instead
+      // of silently doing nothing, and try again next tick.
+      final name = pairing.nameFor(targetId) ?? 'the paired device';
+      if (clipboardSyncError != '$name is offline') {
+        clipboardSyncError = '$name is offline';
+        notifyListeners();
+      }
+      return;
+    }
     final target = matches.first;
 
     String? text;
@@ -636,6 +646,7 @@ class AppState extends ChangeNotifier {
       return;
     }
     if (text == null || text.isEmpty || text == _lastClipboardText) return;
+    netLog('app', 'clipboard changed locally (${text.length} chars), pushing to ${target.name}');
 
     try {
       await _client.sendClipboard(target: target, requesterId: settings.deviceId, text: text);
@@ -645,6 +656,7 @@ class AppState extends ChangeNotifier {
       // synced and it would never be retried, even though the peer never
       // got it.
       _lastClipboardText = text;
+      netLog('app', 'clipboard pushed to ${target.name} OK');
       if (clipboardSyncError != null) {
         clipboardSyncError = null;
         notifyListeners();

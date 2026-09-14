@@ -207,8 +207,9 @@ class TransferClient {
     required String text,
   }) async {
     final client = HttpClient();
+    final uri = Uri.parse('http://${target.address}:${target.port}/clipboard');
     try {
-      final uri = Uri.parse('http://${target.address}:${target.port}/clipboard');
+      netLog('client', 'pushing clipboard (${text.length} chars) to ${target.name} at $uri');
       final request = await client.postUrl(uri);
       request.headers.contentType = ContentType.json;
       request.write(jsonEncode({'requesterId': requesterId, 'text': text}));
@@ -217,6 +218,9 @@ class TransferClient {
       if (response.statusCode != HttpStatus.ok) {
         throw Exception('Clipboard push failed (${response.statusCode})');
       }
+    } catch (e) {
+      netLog('client', 'clipboard push to $uri failed: $e');
+      rethrow;
     } finally {
       client.close(force: true);
     }
