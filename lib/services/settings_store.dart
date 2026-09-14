@@ -6,7 +6,6 @@ class SettingsStore {
   static const _keyDeviceId = 'device_id';
   static const _keyDeviceName = 'device_name';
   static const _keyDownloadDir = 'download_dir';
-  static const _keyAutoAccept = 'auto_accept_trusted';
   static const _keyThemeMode = 'theme_mode'; // system | light | dark
 
   final SharedPreferences _prefs;
@@ -35,9 +34,6 @@ class SettingsStore {
 
   String get downloadDir => _prefs.getString(_keyDownloadDir)!;
   Future<void> setDownloadDir(String path) => _prefs.setString(_keyDownloadDir, path);
-
-  bool get autoAcceptTrusted => _prefs.getBool(_keyAutoAccept) ?? false;
-  Future<void> setAutoAcceptTrusted(bool value) => _prefs.setBool(_keyAutoAccept, value);
 
   String get themeMode => _prefs.getString(_keyThemeMode) ?? 'system';
   Future<void> setThemeMode(String mode) => _prefs.setString(_keyThemeMode, mode);

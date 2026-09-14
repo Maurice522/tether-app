@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../models/pairing_request.dart';
 import '../models/transfer.dart';
 
 /// Resolves where an incoming file's bytes should be written, and is
@@ -31,13 +32,18 @@ class TransferServer {
   static const Duration decisionTimeout = Duration(seconds: 60);
 
   final void Function(IncomingTransferRequest request) onIncomingRequest;
+  final void Function(IncomingPairRequest request) onIncomingPairRequest;
   final FileSink onFileSink;
 
   HttpServer? _server;
   final Map<String, IncomingTransferRequest> _pending = {};
   final Map<String, IncomingTransferRequest> _accepted = {};
 
-  TransferServer({required this.onIncomingRequest, required this.onFileSink});
+  TransferServer({
+    required this.onIncomingRequest,
+    required this.onIncomingPairRequest,
+    required this.onFileSink,
+  });
 
   int get port => _server?.port ?? 0;
 
@@ -55,6 +61,8 @@ class TransferServer {
     try {
       if (request.method == 'POST' && request.uri.path == '/offer') {
         await _handleOffer(request);
+      } else if (request.method == 'POST' && request.uri.path == '/pair') {
+        await _handlePair(request);
       } else if (request.method == 'POST' && request.uri.pathSegments.length == 3 && request.uri.pathSegments[0] == 'upload') {
         await _handleUpload(request);
       } else {
@@ -98,6 +106,30 @@ class TransferServer {
     }
     _pending.remove(transferId);
     if (accepted) _accepted[transferId] = incoming;
+
+    request.response.headers.contentType = ContentType.json;
+    request.response.write(jsonEncode({'decision': accepted ? 'accept' : 'decline'}));
+    await request.response.close();
+  }
+
+  Future<void> _handlePair(HttpRequest request) async {
+    final body = await utf8.decoder.bind(request).join();
+    final json = jsonDecode(body) as Map<String, dynamic>;
+
+    final incoming = IncomingPairRequest(
+      requesterId: json['id'] as String,
+      requesterName: json['name'] as String,
+      requesterAddress: request.connectionInfo?.remoteAddress.address ?? 'unknown',
+      code: json['code'] as String,
+    );
+    onIncomingPairRequest(incoming);
+
+    bool accepted;
+    try {
+      accepted = await incoming.decision.future.timeout(decisionTimeout);
+    } catch (_) {
+      accepted = false;
+    }
 
     request.response.headers.contentType = ContentType.json;
     request.response.write(jsonEncode({'decision': accepted ? 'accept' : 'decline'}));

@@ -42,6 +42,8 @@ dependencies:
   shared_preferences: ^2.3.2
   file_picker: ^12.3.0
   intl: ^0.19.0
+  window_manager: ^0.5.2
+  tray_manager: ^0.5.3
 
 dev_dependencies:
   flutter_test:
@@ -64,6 +66,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/tray_icon.png
+    - assets/tray_icon.ico
 
   # To add assets to your application, add an assets section, like this:
   # assets:

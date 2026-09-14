@@ -2,11 +2,11 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Persists which peer device ids the user has explicitly trusted.
+/// Persists which peer device ids the user has explicitly paired with.
 ///
-/// Trusting a device only skips the pairing-code comparison step on
-/// future transfers — an accept/decline prompt is still shown per
-/// transfer unless the user has also enabled auto-accept in settings.
+/// A paired device skips the pairing code *and* the accept/decline prompt
+/// entirely on every future transfer, in both directions — pairing is the
+/// one deliberate step; everything after it is prompt-free.
 class PairingStore {
   static const _prefsKey = 'trusted_devices_v1';
 

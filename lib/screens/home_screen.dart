@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/pairing_request.dart';
 import '../models/transfer.dart';
 import '../state/app_state.dart';
 import 'activity_screen.dart';
 import 'devices_screen.dart';
 import 'settings_screen.dart';
+import 'widgets/incoming_pair_dialog.dart';
 import 'widgets/incoming_transfer_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -18,6 +20,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _index = 0;
   IncomingTransferRequest? _dialogShownFor;
+  IncomingPairRequest? _pairDialogShownFor;
 
   static const _screens = [DevicesScreen(), ActivityScreen(), SettingsScreen()];
 
@@ -25,6 +28,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
     final next = appState.pendingRequests.isEmpty ? null : appState.pendingRequests.first;
+    final nextPair = appState.pendingPairRequests.isEmpty ? null : appState.pendingPairRequests.first;
 
     if (next != null && next != _dialogShownFor) {
       _dialogShownFor = next;
@@ -35,6 +39,18 @@ class _HomeScreenState extends State<HomeScreen> {
           barrierDismissible: false,
           builder: (_) => IncomingTransferDialog(request: next),
         ).then((_) => _dialogShownFor = null);
+      });
+    }
+
+    if (nextPair != null && nextPair != _pairDialogShownFor) {
+      _pairDialogShownFor = nextPair;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => IncomingPairDialog(request: nextPair),
+        ).then((_) => _pairDialogShownFor = null);
       });
     }
 

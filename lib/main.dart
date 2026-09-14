@@ -2,21 +2,27 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'screens/home_screen.dart';
+import 'services/desktop_window_service.dart';
 import 'state/app_state.dart';
 
-void main() {
-  runApp(const LanShareApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final desktopWindow = DesktopWindowService();
+  await desktopWindow.init();
+  runApp(LanShareApp(desktopWindow: desktopWindow));
 }
 
 class LanShareApp extends StatefulWidget {
-  const LanShareApp({super.key});
+  final DesktopWindowService desktopWindow;
+
+  const LanShareApp({super.key, required this.desktopWindow});
 
   @override
   State<LanShareApp> createState() => _LanShareAppState();
 }
 
 class _LanShareAppState extends State<LanShareApp> {
-  final AppState _appState = AppState();
+  late final AppState _appState = AppState(desktopWindow: widget.desktopWindow);
 
   @override
   void initState() {

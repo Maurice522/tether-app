@@ -42,6 +42,27 @@ class TransferClient {
     }
   }
 
+  Future<bool> sendPairRequest({
+    required Device target,
+    required String selfId,
+    required String selfName,
+    required String code,
+  }) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse('http://${target.address}:${target.port}/pair');
+      final request = await client.postUrl(uri);
+      request.headers.contentType = ContentType.json;
+      request.write(jsonEncode({'id': selfId, 'name': selfName, 'code': code}));
+      final response = await request.close().timeout(offerTimeout);
+      final body = await utf8.decoder.bind(response).join();
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      return json['decision'] == 'accept';
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   Future<void> uploadFile({
     required Device target,
     required String transferId,

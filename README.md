@@ -26,23 +26,40 @@ Implemented (Phases 1–4 core logic):
   `POST /upload/<transferId>/<fileIndex>` straight to disk — never fully
   buffered in memory — with progress reported as bytes flow.
 - **Pairing/trust** (`lib/services/pairing_store.dart`,
-  `util/pairing_code.dart`) — first contact with an untrusted device shows
-  a 6-digit code in both the sender's "waiting" screen and the receiver's
-  accept dialog, so a human can visually confirm both devices agree before
-  accepting. Each device keeps its own trust list; trust is never asserted
-  by the *other* side over the wire (a compromised sender claiming "trust
-  me" is not honored — the receiver's own trust store is authoritative for
-  its side, and vice versa). Auto-accept for trusted devices is an
-  explicit opt-in setting, per the original plan.
+  `util/pairing_code.dart`, `POST /pair`) — pairing is a deliberate,
+  one-time step separate from sending: tapping **Pair** on a device sends
+  a pair request with a 6-digit code, shown on both screens for a human
+  to visually confirm before accepting. Once paired, that device is
+  trusted permanently (each side keeps its own trust list; trust is never
+  asserted by the *other* side over the wire — a compromised sender
+  claiming "trust me" is not honored). Paired devices skip *all* prompts
+  on every future transfer, in both directions — no code, no accept
+  dialog, nothing. Unpaired devices still get a one-off **Send** with an
+  inline pairing code and an accept/decline prompt, for occasional
+  transfers without formally pairing.
 - **App shell** (`lib/screens/`) — Nearby Devices list with per-device
-  Send, an Activity tab (active transfers + persisted history), and
-  Settings (device name, download folder, auto-accept, theme, trusted
-  device management).
+  Pair/Send, an Activity tab (active transfers + persisted history), and
+  Settings (device name with an explicit Save button, download folder,
+  theme, paired device management).
+- **Background/tray on desktop** (`lib/services/desktop_window_service.dart`,
+  `window_manager` + `tray_manager`) — on macOS and Windows, closing the
+  window hides it instead of quitting the app; a tray/menu-bar icon
+  offers "Show LAN Share" and "Quit". This keeps the transfer server and
+  discovery broadcast running so other devices can keep reaching you
+  after you close the window — only Quit (from the tray menu, or the
+  system's own app-quit shortcut) actually exits. No-op on Android/iOS.
+  An incoming transfer or pair request also brings the window to the
+  front automatically, so the prompt isn't missed behind other windows.
 
 Verified so far: `flutter analyze`/`flutter test` pass; `flutter build
 macos --debug` builds and the app launches/runs stably; `flutter build apk
---debug` builds cleanly. Not yet run on an actual Android device/emulator
-or on Windows at all (see Toolchain below).
+--debug` builds cleanly. The background/tray service registers with macOS
+without errors (confirmed via system logs — the status item scene is
+created successfully), but its on-screen appearance hasn't been visually
+confirmed in this dev environment; please confirm the tray icon shows up
+and that closing the window keeps the app running when you test it. Not
+yet run on an actual Android device/emulator or on Windows at all (see
+Toolchain below).
 
 Not yet done (see original plan's Phase 4/5):
 
@@ -69,6 +86,9 @@ Not yet done (see original plan's Phase 4/5):
   `{"decision":"accept"}` or `{"decision":"decline"}`.
 - `POST /upload/<transferId>/<fileIndex>` — raw file bytes, one file per
   request, sent sequentially for a given transfer.
+- `POST /pair` — body: `{"id","name","code"}`. Same accept/decline
+  response shape as `/offer`. Accepting always trusts the requester on
+  both sides; nothing is transferred as part of pairing itself.
 
 There's no TLS — this is intentionally a trusted-LAN tool, not something to
 run over an untrusted network segment.
@@ -104,11 +124,15 @@ On this Mac, **macOS and Android are both fully set up and verified**:
 desktop target requires an actual Windows host with Visual Studio's
 "Desktop development with C++" workload; there's no cross-compilation
 path. The `windows/` scaffold here is the untouched `flutter create`
-output — no custom native code was added, and every plugin in use
+output — no custom native code was added. Most plugins in use
 (`path_provider`, `shared_preferences`, `file_picker`, `provider`,
-`uuid`, `intl`) resolves to a pure-Dart/FFI (`win32` package)
-implementation on Windows, i.e. `windows/flutter/generated_plugins.cmake`
-has no native C++ plugin entries to go wrong. To actually build it:
+`uuid`, `intl`) resolve to a pure-Dart/FFI (`win32` package)
+implementation on Windows, but `window_manager` and `tray_manager` (added
+for the background/tray feature) *do* have real native C++ Windows
+implementations — see `windows/flutter/generated_plugins.cmake` — so a
+Windows build will actually compile native plugin code the first time,
+which is exactly what the Visual Studio C++ workload below is for. To
+actually build it:
 
 1. On a Windows machine, install Flutter (same stable-channel clone
    approach works, or the installer from flutter.dev) and Visual Studio

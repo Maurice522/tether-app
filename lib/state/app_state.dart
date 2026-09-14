@@ -7,7 +7,9 @@ import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
 import '../models/device.dart';
+import '../models/pairing_request.dart';
 import '../models/transfer.dart';
+import '../services/desktop_window_service.dart';
 import '../services/discovery_service.dart';
 import '../services/history_store.dart';
 import '../services/pairing_store.dart';
@@ -23,6 +25,10 @@ const _uuid = Uuid();
 /// server/client, and persisted settings/trust/history together, and
 /// exposes everything the screens need as observable state.
 class AppState extends ChangeNotifier {
+  final DesktopWindowService? desktopWindow;
+
+  AppState({this.desktopWindow});
+
   late final SettingsStore settings;
   late final PairingStore pairing;
   late final HistoryStore history;
@@ -33,8 +39,10 @@ class AppState extends ChangeNotifier {
 
   List<Device> devices = [];
   final List<IncomingTransferRequest> pendingRequests = [];
+  final List<IncomingPairRequest> pendingPairRequests = [];
   final Map<String, TransferRecord> activeTransfers = {};
   List<TransferRecord> completedTransfers = [];
+  final Map<String, PairingAttempt> pairingAttempts = {};
 
   StreamSubscription<List<Device>>? _devicesSub;
   bool _ready = false;
@@ -49,7 +57,11 @@ class AppState extends ChangeNotifier {
     history = await HistoryStore.load();
     completedTransfers = history.readAll();
 
-    final server = TransferServer(onIncomingRequest: _onIncomingRequest, onFileSink: _saveIncomingFile);
+    final server = TransferServer(
+      onIncomingRequest: _onIncomingRequest,
+      onIncomingPairRequest: _onIncomingPairRequest,
+      onFileSink: _saveIncomingFile,
+    );
     await server.start();
     _server = server;
 
@@ -93,11 +105,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> updateAutoAccept(bool value) async {
-    await settings.setAutoAcceptTrusted(value);
-    notifyListeners();
-  }
-
   ThemeMode get themeMode {
     if (!_ready) return ThemeMode.system;
     switch (settings.themeMode) {
@@ -121,6 +128,69 @@ class AppState extends ChangeNotifier {
     } else {
       await pairing.untrust(deviceId);
     }
+    notifyListeners();
+  }
+
+  Future<void> _bringToFront() async {
+    try {
+      await desktopWindow?.bringToFront();
+    } catch (_) {
+      // Best-effort; never let a window-focus hiccup block an incoming request.
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Pairing
+  // ---------------------------------------------------------------------
+
+  /// Starts pairing with [target]: shows a code locally and sends a pair
+  /// request the other device must confirm. On mutual acceptance, both
+  /// sides trust each other and future transfers need no further prompts.
+  /// Returns an id to watch via [pairingAttempts].
+  String initiatePairing(Device target) {
+    final id = _uuid.v4();
+    final code = generatePairingCode();
+    final attempt = PairingAttempt(id: id, peerId: target.id, peerName: target.name, code: code);
+    pairingAttempts[id] = attempt;
+    notifyListeners();
+
+    _runOutgoingPairing(target, attempt);
+    return id;
+  }
+
+  Future<void> _runOutgoingPairing(Device target, PairingAttempt attempt) async {
+    try {
+      final accepted = await _client.sendPairRequest(
+        target: target,
+        selfId: settings.deviceId,
+        selfName: settings.deviceName,
+        code: attempt.code,
+      );
+      if (accepted) {
+        await pairing.trust(target.id, target.name);
+        attempt.status = PairingStatus.accepted;
+      } else {
+        attempt.status = PairingStatus.declined;
+      }
+    } catch (e) {
+      attempt.status = PairingStatus.failed;
+      attempt.error = e.toString();
+    }
+    notifyListeners();
+  }
+
+  void _onIncomingPairRequest(IncomingPairRequest request) {
+    pendingPairRequests.add(request);
+    _bringToFront();
+    notifyListeners();
+  }
+
+  Future<void> respondToPairRequest(IncomingPairRequest request, bool accept) async {
+    pendingPairRequests.remove(request);
+    if (accept) {
+      await pairing.trust(request.requesterId, request.requesterName);
+    }
+    request.decision.complete(accept);
     notifyListeners();
   }
 
@@ -208,12 +278,12 @@ class AppState extends ChangeNotifier {
   // ---------------------------------------------------------------------
 
   void _onIncomingRequest(IncomingTransferRequest request) {
-    final autoAccept = settings.autoAcceptTrusted && pairing.isTrusted(request.senderId);
-    if (autoAccept) {
+    if (pairing.isTrusted(request.senderId)) {
       _acceptIncoming(request, trustAfter: false);
       return;
     }
     pendingRequests.add(request);
+    _bringToFront();
     notifyListeners();
   }
 

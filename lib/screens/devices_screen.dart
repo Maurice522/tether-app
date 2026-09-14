@@ -8,6 +8,7 @@ import '../models/device.dart';
 import '../state/app_state.dart';
 import '../util/format.dart';
 import 'widgets/outgoing_transfer_dialog.dart';
+import 'widgets/pairing_dialog.dart';
 
 class DevicesScreen extends StatelessWidget {
   const DevicesScreen({super.key});
@@ -24,6 +25,15 @@ class DevicesScreen extends StatelessWidget {
     showDialog(
       context: context,
       builder: (_) => OutgoingTransferDialog(transferId: transferId),
+    );
+  }
+
+  void _pair(BuildContext context, Device device) {
+    final appState = context.read<AppState>();
+    final attemptId = appState.initiatePairing(device);
+    showDialog(
+      context: context,
+      builder: (_) => PairingDialog(attemptId: attemptId),
     );
   }
 
@@ -45,11 +55,26 @@ class DevicesScreen extends StatelessWidget {
                 return ListTile(
                   leading: Text(platformIcon(device.platform), style: const TextStyle(fontSize: 28)),
                   title: Text(device.name),
-                  subtitle: Text('${device.address}${trusted ? ' · Trusted' : ''}'),
-                  trailing: FilledButton.tonal(
-                    onPressed: () => _pickAndSend(context, device),
-                    child: const Text('Send'),
-                  ),
+                  subtitle: Text('${device.address}${trusted ? ' · Paired' : ''}'),
+                  trailing: trusted
+                      ? FilledButton.tonal(
+                          onPressed: () => _pickAndSend(context, device),
+                          child: const Text('Send'),
+                        )
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            OutlinedButton(
+                              onPressed: () => _pair(context, device),
+                              child: const Text('Pair'),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton.tonal(
+                              onPressed: () => _pickAndSend(context, device),
+                              child: const Text('Send'),
+                            ),
+                          ],
+                        ),
                 );
               },
             ),

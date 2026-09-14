@@ -26,6 +26,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
+  void _saveName() {
+    final value = _nameController.text.trim();
+    if (value.isEmpty) return;
+    context.read<AppState>().updateDeviceName(value);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Device name saved'), duration: Duration(seconds: 2)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
@@ -37,12 +46,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.all(16),
-            child: TextField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Device name', border: OutlineInputBorder()),
-              onSubmitted: (value) {
-                if (value.trim().isNotEmpty) appState.updateDeviceName(value.trim());
-              },
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _nameController,
+                    decoration: const InputDecoration(labelText: 'Device name', border: OutlineInputBorder()),
+                    onSubmitted: (_) => _saveName(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(onPressed: _saveName, child: const Text('Save')),
+              ],
             ),
           ),
           ListTile(
@@ -53,12 +69,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               final path = await FilePicker.getDirectoryPath();
               if (path != null) await appState.updateDownloadDir(path);
             },
-          ),
-          SwitchListTile(
-            title: const Text('Auto-accept from trusted devices'),
-            subtitle: const Text('Skip the accept prompt entirely for devices you trust'),
-            value: appState.settings.autoAcceptTrusted,
-            onChanged: (v) => appState.updateAutoAccept(v),
           ),
           const Divider(),
           Padding(
@@ -79,12 +89,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text('Trusted devices', style: Theme.of(context).textTheme.labelLarge),
+            child: Text('Paired devices', style: Theme.of(context).textTheme.labelLarge),
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Paired devices can send you files with no prompts at all. Unpair one below to require pairing again.',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
+            ),
           ),
           if (trustedIds.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text('No trusted devices yet', style: TextStyle(color: Colors.grey)),
+              child: Text('No paired devices yet', style: TextStyle(color: Colors.grey)),
             )
           else
             ...trustedIds.map(
