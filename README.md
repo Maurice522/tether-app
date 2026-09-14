@@ -39,13 +39,19 @@ Implemented (Phases 1–4 core logic):
   Settings (device name, download folder, auto-accept, theme, trusted
   device management).
 
+Verified so far: `flutter analyze`/`flutter test` pass; `flutter build
+macos --debug` builds and the app launches/runs stably; `flutter build apk
+--debug` builds cleanly. Not yet run on an actual Android device/emulator
+or on Windows at all (see Toolchain below).
+
 Not yet done (see original plan's Phase 4/5):
 
-- Platform packaging (`.apk`, MSIX, `.dmg`) — needs full Xcode / Android
-  SDK, see below.
+- Release packaging (signed `.apk`/AAB, MSIX, `.dmg`) — debug builds work
+  now; release signing configs aren't set up.
 - Cancel-in-progress / resume support.
 - Real multi-device testing across Mac/Windows/Android (Phase 5) — needs
-  the toolchains below installed and a live LAN with all three devices.
+  a Windows machine (can't be done from this Mac) and a live LAN with all
+  three devices.
 
 ## Wire protocol
 
@@ -76,14 +82,45 @@ export PATH="$HOME/development/flutter/bin:$PATH"   # already added to ~/.zshrc
 flutter doctor
 ```
 
-- **macOS builds** need full Xcode from the App Store (Command Line Tools
-  alone can compile the native-asset FFI bits but not the app shell/xcodeproj
-  build). After installing: `sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer && sudo xcodebuild -runFirstLaunch`.
-- **Android builds** need Android Studio / the Android SDK — see
-  https://flutter.dev/to/macos-android-setup.
-- **Windows builds** need to happen on a Windows machine (or you'll need
-  Visual Studio's C++ desktop workload there) — Flutter's Windows desktop
-  target isn't cross-compilable from macOS.
+On this Mac, **macOS and Android are both fully set up and verified**:
+
+- Xcode 26.6 installed (App Store) — `flutter build macos --debug` builds
+  and the app launches and runs stably.
+- Android SDK installed headlessly via command-line tools (no Android
+  Studio GUI needed) — `~/Library/Android/sdk`, with platform 35/36 and
+  build-tools 28.0.3/36.0.0 (Flutter wants specific versions of each).
+  JDK 17 (Temurin) at `~/development/jdk-17`. Both `JAVA_HOME` and
+  `ANDROID_HOME` are exported in `~/.zshrc`. `flutter build apk --debug`
+  builds cleanly.
+  - Note: `file_picker` had to be bumped from 8.x to 12.x — the old
+    version's bundled Android module hardcoded `compileSdk 34`, which
+    conflicted with a transitive dependency requiring 36+. The 12.x
+    `FilePicker.pickFiles()`/`getDirectoryPath()` API is also slightly
+    different (no more `.platform` singleton, `pickFiles` returns
+    `List<PlatformFile>` directly) — already updated in
+    `lib/screens/devices_screen.dart` and `settings_screen.dart`.
+
+**Windows can't be built or tested from this Mac** — Flutter's Windows
+desktop target requires an actual Windows host with Visual Studio's
+"Desktop development with C++" workload; there's no cross-compilation
+path. The `windows/` scaffold here is the untouched `flutter create`
+output — no custom native code was added, and every plugin in use
+(`path_provider`, `shared_preferences`, `file_picker`, `provider`,
+`uuid`, `intl`) resolves to a pure-Dart/FFI (`win32` package)
+implementation on Windows, i.e. `windows/flutter/generated_plugins.cmake`
+has no native C++ plugin entries to go wrong. To actually build it:
+
+1. On a Windows machine, install Flutter (same stable-channel clone
+   approach works, or the installer from flutter.dev) and Visual Studio
+   2022 Community with the "Desktop development with C++" workload.
+2. Copy or `git clone` this repo there.
+3. `flutter doctor` should show Visual Studio ✓, then:
+   ```
+   flutter run -d windows
+   ```
+4. Windows Defender Firewall will prompt to allow the app through on
+   first run (for both the discovery UDP broadcast and the HTTP transfer
+   server) — allow it on at least the Private network profile.
 
 Once a platform's toolchain is present:
 
