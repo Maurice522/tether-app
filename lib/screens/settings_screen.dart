@@ -1,8 +1,10 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../util/network_info.dart';
 import '../util/reveal.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -14,11 +16,22 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _nameController;
+  List<String> _ipAddresses = [];
 
   @override
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: context.read<AppState>().settings.deviceName);
+    localIpAddresses().then((addresses) {
+      if (mounted) setState(() => _ipAddresses = addresses);
+    });
+  }
+
+  void _copyIp(String address) {
+    Clipboard.setData(ClipboardData(text: address));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Copied $address'), duration: const Duration(seconds: 2)),
+    );
   }
 
   @override
@@ -60,6 +73,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(width: 8),
                 FilledButton(onPressed: _saveName, child: const Text('Save')),
               ],
+            ),
+          ),
+          if (_ipAddresses.isEmpty)
+            const ListTile(
+              title: Text('This device\'s IP address'),
+              subtitle: Text('Looking it up…'),
+            )
+          else
+            for (var i = 0; i < _ipAddresses.length; i++)
+              ListTile(
+                title: Text(_ipAddresses.length > 1 ? 'IP address ${i + 1}' : 'This device\'s IP address'),
+                subtitle: Text(_ipAddresses[i]),
+                trailing: IconButton(
+                  icon: const Icon(Icons.copy),
+                  tooltip: 'Copy',
+                  onPressed: () => _copyIp(_ipAddresses[i]),
+                ),
+              ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Type this into "Add device by IP" on another device if it isn\'t showing up automatically.',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
             ),
           ),
           ListTile(
