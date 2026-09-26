@@ -55,6 +55,14 @@ typedef ClipboardSink = void Function(String text);
 class TransferServer {
   static const Duration decisionTimeout = Duration(seconds: 60);
 
+  /// Fixed port the server tries first, so a device can be added manually
+  /// by IP alone (no need to also know/type a port) — useful when
+  /// broadcast discovery isn't reaching a peer (e.g. a router that filters
+  /// broadcast/multicast between Wi-Fi clients while still routing normal
+  /// unicast traffic fine). Falls back to an OS-assigned port if this one
+  /// is already taken, so startup never fails outright over a conflict.
+  static const int defaultPort = 57892;
+
   final void Function(IncomingTransferRequest request) onIncomingRequest;
   final void Function(IncomingPairRequest request) onIncomingPairRequest;
   final FileSink onFileSink;
@@ -62,6 +70,9 @@ class TransferServer {
   final DirLister onListDir;
   final FileOpener onOpenFile;
   final ClipboardSink onClipboard;
+  final String selfId;
+  final String Function() selfName;
+  final String selfPlatform;
 
   HttpServer? _server;
   final Map<String, IncomingTransferRequest> _pending = {};
@@ -75,12 +86,20 @@ class TransferServer {
     required this.onListDir,
     required this.onOpenFile,
     required this.onClipboard,
+    required this.selfId,
+    required this.selfName,
+    required this.selfPlatform,
   });
 
   int get port => _server?.port ?? 0;
 
   Future<void> start() async {
-    _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+    try {
+      _server = await HttpServer.bind(InternetAddress.anyIPv4, defaultPort);
+    } catch (e) {
+      netLog('server', 'bind to default port $defaultPort failed ($e), falling back to an OS-assigned port');
+      _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+    }
     netLog('server', 'listening on port ${_server!.port}');
     _server!.listen(_handle, onError: (e) => netLog('server', 'listen error: $e'));
   }
@@ -105,6 +124,8 @@ class TransferServer {
         await _handleFetch(request);
       } else if (request.method == 'POST' && request.uri.path == '/clipboard') {
         await _handleClipboard(request);
+      } else if (request.method == 'GET' && request.uri.path == '/whoami') {
+        await _handleWhoami(request);
       } else {
         netLog('server', 'unmatched request: ${request.method} ${request.uri.path}');
         request.response.statusCode = HttpStatus.notFound;
@@ -281,6 +302,16 @@ class TransferServer {
     netLog('server', 'clipboard push received from $requesterId (${text.length} chars)');
     onClipboard(text);
     request.response.statusCode = HttpStatus.ok;
+    await request.response.close();
+  }
+
+  /// Answers "who are you" with no trust check — this is how a manually
+  /// entered IP gets turned into a real [Device] (id/name/platform) when
+  /// broadcast discovery isn't reaching a peer. It reveals nothing a
+  /// broadcast announce doesn't already reveal to anyone on the LAN.
+  Future<void> _handleWhoami(HttpRequest request) async {
+    request.response.headers.contentType = ContentType.json;
+    request.response.write(jsonEncode({'id': selfId, 'name': selfName(), 'platform': selfPlatform}));
     await request.response.close();
   }
 }

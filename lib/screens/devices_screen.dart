@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../models/device.dart';
 import '../state/app_state.dart';
 import '../util/format.dart';
+import 'widgets/add_device_dialog.dart';
 import 'widgets/outgoing_transfer_dialog.dart';
 import 'widgets/pairing_dialog.dart';
 
@@ -46,6 +47,11 @@ class DevicesScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Nearby Devices'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: 'Add device by IP',
+            onPressed: () => showDialog(context: context, builder: (_) => const AddDeviceDialog()),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh',

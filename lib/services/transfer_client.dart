@@ -5,6 +5,7 @@ import '../models/device.dart';
 import '../models/remote_entry.dart';
 import '../models/transfer.dart';
 import '../util/net_log.dart';
+import 'transfer_server.dart' show TransferServer;
 
 class TransferOfferResult {
   final bool accepted;
@@ -220,6 +221,38 @@ class TransferClient {
       }
     } catch (e) {
       netLog('client', 'clipboard push to $uri failed: $e');
+      rethrow;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Resolves [address]:[port] to a real [Device] by asking it directly —
+  /// the manual "add device by IP" fallback for when broadcast discovery
+  /// isn't reaching a peer (e.g. a router that filters broadcast/multicast
+  /// between Wi-Fi clients while unicast still works fine).
+  Future<Device> probeDevice({required String address, int port = TransferServer.defaultPort}) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse('http://$address:$port/whoami');
+      netLog('client', 'probing $uri');
+      final request = await client.getUrl(uri);
+      final response = await request.close().timeout(const Duration(seconds: 8));
+      if (response.statusCode != HttpStatus.ok) {
+        throw Exception('Device did not respond (${response.statusCode})');
+      }
+      final body = await utf8.decoder.bind(response).join();
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      return Device(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        platform: json['platform'] as String,
+        address: address,
+        port: port,
+        lastSeen: DateTime.now(),
+      );
+    } catch (e) {
+      netLog('client', 'probe $address:$port failed: $e');
       rethrow;
     } finally {
       client.close(force: true);

@@ -41,7 +41,24 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   TransferServer? _server;
   final TransferClient _client = TransferClient();
 
-  List<Device> devices = [];
+  List<Device> _discoveredDevices = [];
+  final Map<String, Device> _manualDevices = {};
+  String? manualAddError;
+
+  /// Broadcast-discovered devices merged with manually-added ones (a
+  /// fallback for when broadcast isn't reaching a peer — see
+  /// [addManualDevice]). A device discovered normally takes precedence
+  /// over a manual entry with the same id, since it's more likely to have
+  /// a fresh address/port.
+  List<Device> get devices {
+    final merged = <String, Device>{..._manualDevices};
+    for (final d in _discoveredDevices) {
+      merged[d.id] = d;
+    }
+    return merged.values.toList(growable: false)
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  }
+
   final List<IncomingTransferRequest> pendingRequests = [];
   final List<IncomingPairRequest> pendingPairRequests = [];
   final Map<String, TransferRecord> activeTransfers = {};
@@ -80,6 +97,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       onListDir: _listRemoteDir,
       onOpenFile: _openRemoteFile,
       onClipboard: _onClipboardReceived,
+      selfId: settings.deviceId,
+      selfName: () => settings.deviceName,
+      selfPlatform: _platformLabel(),
     );
     try {
       await server.start();
@@ -97,7 +117,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         platform: _platformLabel(),
       );
       _devicesSub = discovery.devicesStream.listen((list) {
-        devices = list;
+        _discoveredDevices = list;
         notifyListeners();
       });
       try {
@@ -159,6 +179,23 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   void dismissStartupError() {
     startupError = null;
+    notifyListeners();
+  }
+
+  /// Fallback for when broadcast discovery isn't reaching a peer (e.g. a
+  /// router that filters broadcast/multicast between Wi-Fi clients while
+  /// unicast still works fine — the actual cause is unfixable from here,
+  /// this just routes around it): probes [address] directly and adds
+  /// whatever answers as a device, exactly as if discovery had found it.
+  Future<void> addManualDevice(String address) async {
+    manualAddError = null;
+    notifyListeners();
+    try {
+      final device = await _client.probeDevice(address: address);
+      _manualDevices[device.id] = device;
+    } catch (e) {
+      manualAddError = 'Could not reach $address: $e';
+    }
     notifyListeners();
   }
 
