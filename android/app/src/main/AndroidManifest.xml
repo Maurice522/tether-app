@@ -2,6 +2,10 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Without this, Android can silently drop the UDP broadcast packets
+         discovery relies on once the Wi-Fi radio enters a power-save
+         state — the socket looks fine locally, packets just never arrive. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <!-- Lets the app keep discovery/the transfer server/clipboard sync
          running while backgrounded, instead of Android freezing the
          process after a short idle period. -->

@@ -53,11 +53,25 @@ class DevicesScreen extends StatelessWidget {
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async => appState.refreshDevices(),
-        child: devices.isEmpty
-            ? const _EmptyState()
-            : ListView.separated(
+      body: Column(
+        children: [
+          if (appState.startupError != null)
+            MaterialBanner(
+              backgroundColor: Theme.of(context).colorScheme.errorContainer,
+              content: Text(appState.startupError!),
+              actions: [
+                TextButton(
+                  onPressed: () => appState.dismissStartupError(),
+                  child: const Text('Dismiss'),
+                ),
+              ],
+            ),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: () async => appState.refreshDevices(),
+              child: devices.isEmpty
+                  ? const _EmptyState()
+                  : ListView.separated(
                 itemCount: devices.length,
                 separatorBuilder: (_, _) => const Divider(height: 1),
                 itemBuilder: (ctx, index) {
@@ -89,6 +103,9 @@ class DevicesScreen extends StatelessWidget {
                   );
                 },
               ),
+            ),
+          ),
+        ],
       ),
     );
   }

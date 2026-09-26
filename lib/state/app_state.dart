@@ -57,6 +57,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   bool _ready = false;
   bool get ready => _ready;
 
+  /// Set if the server or discovery failed to start. The app still opens
+  /// normally either way — [_ready] is never left permanently false just
+  /// because one subsystem had a problem — but this surfaces the error
+  /// instead of leaving the user staring at an empty, unexplained list.
+  String? startupError;
+
   Future<void> init() async {
     final defaultName = await _defaultDeviceName();
     final defaultDir = await defaultDownloadDir();
@@ -75,22 +81,37 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       onOpenFile: _openRemoteFile,
       onClipboard: _onClipboardReceived,
     );
-    await server.start();
-    _server = server;
+    try {
+      await server.start();
+      _server = server;
+    } catch (e, st) {
+      netLog('app', 'FATAL: transfer server failed to start: $e\n$st');
+      startupError = 'Could not start the transfer server: $e';
+    }
 
-    final discovery = DiscoveryService(
-      selfId: settings.deviceId,
-      selfName: settings.deviceName,
-      httpPort: () => server.port,
-      platform: _platformLabel(),
-    );
-    _devicesSub = discovery.devicesStream.listen((list) {
-      devices = list;
-      notifyListeners();
-    });
-    await discovery.start();
-    _discovery = discovery;
+    if (_server != null) {
+      final discovery = DiscoveryService(
+        selfId: settings.deviceId,
+        selfName: settings.deviceName,
+        httpPort: () => _server!.port,
+        platform: _platformLabel(),
+      );
+      _devicesSub = discovery.devicesStream.listen((list) {
+        devices = list;
+        notifyListeners();
+      });
+      try {
+        await discovery.start();
+        _discovery = discovery;
+      } catch (e, st) {
+        netLog('app', 'FATAL: discovery failed to start: $e\n$st');
+        startupError = 'Could not start device discovery: $e';
+      }
+    }
 
+    // Always reach "ready" — a broken subsystem should surface as a visible
+    // error the user can report, never as an infinite loading spinner with
+    // no explanation, which is indistinguishable from "just not working."
     _ready = true;
     notifyListeners();
     _restartClipboardSync();
@@ -134,6 +155,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// backs the pull-to-refresh / refresh button on the Nearby screen.
   void refreshDevices() {
     _discovery?.refreshSelf();
+  }
+
+  void dismissStartupError() {
+    startupError = null;
+    notifyListeners();
   }
 
   // ---------------------------------------------------------------------
