@@ -42,8 +42,24 @@ Implemented (Phases 1–4 core logic):
   waiting for the next broadcast tick), an Activity tab (active transfers
   + persisted history, each completed incoming item has a "show in
   folder" action that reveals the exact saved file), and Settings (device
-  name with an explicit Save button, download folder, theme, clipboard
-  sync, paired device management).
+  name with an explicit Save button, this device's own IP address with a
+  copy button, download folder, theme, clipboard sync, paired device
+  management).
+- **Drag-and-drop on desktop** (`desktop_drop`, `lib/screens/devices_screen.dart`)
+  — on macOS/Windows/Linux, each device row in Nearby Devices is a drop
+  target: dragging files from Finder/Explorer directly onto a device
+  sends them, no file picker needed. No-op on Android (there's no
+  external-app drag source there anyway).
+- **Manual "add device by IP"** (`GET /whoami`, fixed port `57892`,
+  `lib/screens/widgets/add_device_dialog.dart`) — fallback for when
+  broadcast discovery isn't reaching a peer (confirmed on real hardware:
+  some routers filter/rate-limit broadcast between Wi-Fi clients while
+  unicast still works fine). The **+** button on Nearby Devices probes an
+  IP directly and adds whatever answers, exactly as if discovery had
+  found it; Settings shows this device's own IP to hand to the other
+  side. The transfer server now binds to a fixed port first (falling
+  back to an OS-assigned one only on conflict) so a typed IP alone is
+  enough.
 - **Remote browsing** (`lib/screens/browse_screen.dart`,
   `remote_folder_screen.dart`, `GET /browse`, `GET /fetch`) — a new
   **Browse** tab lets you open a paired, currently-online device's shared
@@ -141,6 +157,13 @@ Not yet done (see original plan's Phase 4/5):
   bytes from the shared folder. Same trust check as `/browse`.
 - `POST /clipboard` — body: `{"requesterId","text"}`. Applies `text` to
   the local clipboard if `requesterId` is paired; otherwise `403`.
+- `GET /whoami` — no trust check; answers `{"id","name","platform"}` for
+  this device. Backs "add device by IP" — reveals nothing a broadcast
+  announce doesn't already reveal to anyone on the LAN.
+
+The server binds a fixed port (`57892`) first, falling back to an
+OS-assigned one only if that's taken, so a manually typed IP is enough
+to reach a peer without also needing its port.
 
 There's no TLS — this is intentionally a trusted-LAN tool, not something to
 run over an untrusted network segment.
