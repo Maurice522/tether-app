@@ -113,9 +113,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// copy made while unfocused no matter how often it ticks. As soon as
   /// the app is focused again, force an immediate check instead of
   /// waiting up to [_clipboardPollInterval] for the next scheduled tick.
+  ///
+  /// Also re-announces discovery immediately: an OEM battery manager can
+  /// throttle a backgrounded app's own outgoing broadcast even with the
+  /// foreground service running, so this device may have quietly dropped
+  /// out of everyone else's Nearby Devices list. Nothing the *other* side
+  /// does (including hitting refresh) can fix that — only this device
+  /// broadcasting again can — so do it the moment it's foregrounded
+  /// rather than waiting for the next scheduled tick.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _discovery?.refreshSelf();
       _pollClipboard();
     }
   }
