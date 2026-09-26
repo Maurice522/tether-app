@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../state/app_state.dart';
+import '../../util/format.dart';
 
 /// Fallback for when broadcast discovery isn't finding a peer — probes an
 /// IP address directly and adds it as a device on success.
@@ -22,9 +23,10 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
     super.dispose();
   }
 
-  Future<void> _connect() async {
-    final address = _controller.text.trim();
+  Future<void> _connect([String? addressOverride]) async {
+    final address = addressOverride ?? _controller.text.trim();
     if (address.isEmpty) return;
+    _controller.text = address;
     setState(() => _connecting = true);
 
     final appState = context.read<AppState>();
@@ -40,6 +42,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
+    final recent = appState.manualDevices.all;
     return AlertDialog(
       title: const Text('Add device by IP'),
       content: Column(
@@ -62,6 +65,24 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
           if (appState.manualAddError != null) ...[
             const SizedBox(height: 8),
             Text(appState.manualAddError!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+          ],
+          if (recent.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Text('Recent', style: Theme.of(context).textTheme.labelMedium),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: recent
+                  .map(
+                    (d) => ActionChip(
+                      avatar: Text(platformIcon(d.platform)),
+                      label: Text('${d.name} (${d.address})'),
+                      onPressed: _connecting ? null : () => _connect(d.address),
+                    ),
+                  )
+                  .toList(),
+            ),
           ],
         ],
       ),

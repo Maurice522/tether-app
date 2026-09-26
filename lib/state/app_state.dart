@@ -15,6 +15,7 @@ import '../models/transfer.dart';
 import '../services/desktop_window_service.dart';
 import '../services/discovery_service.dart';
 import '../services/history_store.dart';
+import '../services/manual_device_store.dart';
 import '../services/pairing_store.dart';
 import '../services/settings_store.dart';
 import '../services/transfer_client.dart' show TransferClient, TransferCanceledException;
@@ -36,6 +37,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   late final SettingsStore settings;
   late final PairingStore pairing;
   late final HistoryStore history;
+  late final ManualDeviceStore manualDevices;
 
   DiscoveryService? _discovery;
   TransferServer? _server;
@@ -88,6 +90,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     pairing = await PairingStore.load();
     history = await HistoryStore.load();
     completedTransfers = history.readAll();
+    manualDevices = await ManualDeviceStore.load();
+    for (final device in manualDevices.all) {
+      _manualDevices[device.id] = device;
+    }
 
     final server = TransferServer(
       onIncomingRequest: _onIncomingRequest,
@@ -193,6 +199,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final device = await _client.probeDevice(address: address);
       _manualDevices[device.id] = device;
+      await manualDevices.remember(device);
     } catch (e) {
       manualAddError = 'Could not reach $address: $e';
     }
