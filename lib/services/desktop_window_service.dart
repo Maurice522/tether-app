@@ -23,9 +23,9 @@ class DesktopWindowService with WindowListener, TrayListener {
 
       trayManager.addListener(this);
       await trayManager.setIcon(Platform.isWindows ? 'assets/tray_icon.ico' : 'assets/tray_icon.png');
-      await trayManager.setToolTip('LAN Share');
+      await trayManager.setToolTip('Tether');
       await trayManager.setContextMenu(Menu(items: [
-        MenuItem(key: 'show', label: 'Show LAN Share', onClick: (_) => bringToFront()),
+        MenuItem(key: 'show', label: 'Show Tether', onClick: (_) => bringToFront()),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: 'Quit', onClick: (_) => _quit()),
       ]));

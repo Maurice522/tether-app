@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.mauricerana.lan_share"
+    namespace = "com.mauricerana.tether"
     // flutter.compileSdkVersion currently resolves to 34, but
     // flutter_plugin_android_lifecycle (a transitive dependency of
     // file_picker) requires compileSdk 36+.
@@ -19,7 +19,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.mauricerana.lan_share"
+        applicationId = "com.mauricerana.tether"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

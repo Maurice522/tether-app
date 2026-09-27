@@ -1,3 +1,5 @@
+import 'package:flutter/material.dart';
+
 String formatBytes(int bytes) {
   if (bytes < 1024) return '$bytes B';
   const units = ['KB', 'MB', 'GB', 'TB'];
@@ -24,5 +26,22 @@ String platformIcon(String platform) {
       return '🐧';
     default:
       return '📡';
+  }
+}
+
+/// A vector equivalent of [platformIcon] for use in circular avatars — a
+/// custom icon-on-tinted-background reads as more deliberately designed
+/// than a platform emoji, and renders identically everywhere.
+IconData platformIconData(String platform) {
+  switch (platform) {
+    case 'macos':
+    case 'windows':
+    case 'linux':
+      return Icons.computer_rounded;
+    case 'android':
+    case 'ios':
+      return Icons.smartphone_rounded;
+    default:
+      return Icons.devices_other_rounded;
   }
 }

@@ -1,4 +1,4 @@
-package com.mauricerana.lan_share
+package com.mauricerana.tether
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -24,10 +24,10 @@ import androidx.core.app.NotificationCompat
  * in any of it can never crash the app; all real work stays in the
  * existing Flutter engine/isolate exactly as before.
  */
-class LanShareForegroundService : Service() {
+class TetherForegroundService : Service() {
     companion object {
-        private const val TAG = "LanShareFgService"
-        private const val CHANNEL_ID = "lan_share_running"
+        private const val TAG = "TetherFgService"
+        private const val CHANNEL_ID = "tether_running"
         private const val NOTIFICATION_ID = 1
     }
 
@@ -46,7 +46,7 @@ class LanShareForegroundService : Service() {
             }
 
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("LAN Share")
+                .setContentTitle("Tether")
                 .setContentText("Running in the background so nearby devices can still reach you")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(contentIntent)
@@ -74,7 +74,7 @@ class LanShareForegroundService : Service() {
         if (multicastLock?.isHeld == true) return
         try {
             val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val lock = wifi.createMulticastLock("lan_share_discovery")
+            val lock = wifi.createMulticastLock("tether_discovery")
             lock.setReferenceCounted(false)
             lock.acquire()
             multicastLock = lock
@@ -96,7 +96,7 @@ class LanShareForegroundService : Service() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "LAN Share background service",
+            "Tether background service",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "Keeps device discovery and transfers working while the app is backgrounded"

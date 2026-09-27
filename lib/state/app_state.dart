@@ -818,7 +818,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   // blocks any app from reading the system clipboard while it isn't the
   // focused foreground app (a deliberate OS privacy rule against silent
   // clipboard snooping). So on Android this device can only *detect* a
-  // new copy while LAN Share is actually open and in front; it can still
+  // new copy while Tether is actually open and in front; it can still
   // *receive* a push from the other device and apply it any time this
   // app's process is alive.
   // ---------------------------------------------------------------------

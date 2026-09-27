@@ -6,6 +6,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../theme/tether_theme.dart';
 import '../util/network_info.dart';
 import '../util/reveal.dart';
 
@@ -56,7 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Quit LAN Share?'),
+        title: const Text('Quit Tether?'),
         content: const Text(
           "This fully stops the app, including discovery and the background service — other "
           "devices won't be able to reach you until you reopen it. Closing the app normally "
@@ -76,167 +77,263 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
+    final colors = context.colors;
     final trustedIds = appState.pairing.trustedIds;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
         children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _nameController,
-                    decoration: const InputDecoration(labelText: 'Device name', border: OutlineInputBorder()),
-                    onSubmitted: (_) => _saveName(),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(onPressed: _saveName, child: const Text('Save')),
-              ],
-            ),
-          ),
-          if (_ipAddresses.isEmpty)
-            const ListTile(
-              title: Text('This device\'s IP address'),
-              subtitle: Text('Looking it up…'),
-            )
-          else
-            for (var i = 0; i < _ipAddresses.length; i++)
-              ListTile(
-                title: Text(_ipAddresses.length > 1 ? 'IP address ${i + 1}' : 'This device\'s IP address'),
-                subtitle: Text(_ipAddresses[i]),
-                trailing: IconButton(
-                  icon: const Icon(Icons.copy),
-                  tooltip: 'Copy',
-                  onPressed: () => _copyIp(_ipAddresses[i]),
+          _SectionLabel('This device', colors),
+          _SettingsCard(
+            colors: colors,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(14),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _nameController,
+                        decoration: const InputDecoration(labelText: 'Device name'),
+                        onSubmitted: (_) => _saveName(),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    FilledButton(onPressed: _saveName, child: const Text('Save')),
+                  ],
                 ),
               ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              'Type this into "Add device by IP" on another device if it isn\'t showing up automatically.',
-              style: TextStyle(color: Colors.grey, fontSize: 12),
-            ),
+              _divider(colors),
+              if (_ipAddresses.isEmpty)
+                const _Row(title: 'IP address', subtitle: 'Looking it up…')
+              else
+                for (var i = 0; i < _ipAddresses.length; i++) ...[
+                  _Row(
+                    title: _ipAddresses.length > 1 ? 'IP address ${i + 1}' : 'IP address',
+                    subtitle: _ipAddresses[i],
+                    monoSubtitle: true,
+                    trailing: IconButton(
+                      icon: const Icon(Icons.copy_rounded, size: 19),
+                      tooltip: 'Copy',
+                      onPressed: () => _copyIp(_ipAddresses[i]),
+                    ),
+                  ),
+                  if (i != _ipAddresses.length - 1) _divider(colors),
+                ],
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                child: Text(
+                  'Type this into "Add device by IP" on another device if it isn\'t showing up automatically.',
+                  style: TextStyle(color: colors.faint, fontSize: 12),
+                ),
+              ),
+            ],
           ),
-          ListTile(
-            title: const Text('Download folder'),
-            subtitle: Text(appState.settings.downloadDir),
-            trailing: IconButton(
-              icon: const Icon(Icons.folder_open),
-              tooltip: 'Reveal in Finder',
-              onPressed: () => openFolder(appState.settings.downloadDir),
-            ),
-            onTap: () async {
-              final path = await FilePicker.getDirectoryPath();
-              if (path != null) await appState.updateDownloadDir(path);
-            },
-          ),
-          const Divider(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text('Theme', style: Theme.of(context).textTheme.labelLarge),
-          ),
-          RadioGroup<ThemeMode>(
-            groupValue: appState.themeMode,
-            onChanged: (v) => appState.updateThemeMode(v!),
-            child: const Column(
-              children: [
-                RadioListTile<ThemeMode>(title: Text('System'), value: ThemeMode.system),
-                RadioListTile<ThemeMode>(title: Text('Light'), value: ThemeMode.light),
-                RadioListTile<ThemeMode>(title: Text('Dark'), value: ThemeMode.dark),
-              ],
-            ),
-          ),
-          const Divider(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text('Clipboard sync', style: Theme.of(context).textTheme.labelLarge),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              trustedIds.isEmpty
-                  ? 'Pair with a device first to sync clipboards with it.'
-                  : 'Copy on one device, paste on the other — works both ways. On Android, '
-                      'new copies are only picked up while LAN Share is open (an Android privacy '
-                      'restriction); receiving works any time the app is running.',
-              style: const TextStyle(color: Colors.grey, fontSize: 12),
-            ),
-          ),
-          if (trustedIds.isNotEmpty) ...[
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: DropdownButtonFormField<String>(
-                initialValue: trustedIds.contains(appState.settings.clipboardSyncDeviceId)
-                    ? appState.settings.clipboardSyncDeviceId
-                    : null,
-                decoration: const InputDecoration(labelText: 'Sync with', border: OutlineInputBorder()),
-                items: trustedIds
-                    .map((id) => DropdownMenuItem(value: id, child: Text(appState.pairing.nameFor(id) ?? id)))
-                    .toList(),
-                onChanged: (id) {
-                  if (id == null) return;
-                  appState.setClipboardSync(enabled: appState.settings.clipboardSyncEnabled, deviceId: id);
+          const SizedBox(height: 22),
+          _SectionLabel('Shared folder', colors),
+          _SettingsCard(
+            colors: colors,
+            children: [
+              _Row(
+                title: 'Download folder',
+                subtitle: appState.settings.downloadDir,
+                monoSubtitle: true,
+                trailing: IconButton(
+                  icon: const Icon(Icons.folder_open_rounded, size: 19),
+                  tooltip: 'Reveal',
+                  onPressed: () => openFolder(appState.settings.downloadDir),
+                ),
+                onTap: () async {
+                  final path = await FilePicker.getDirectoryPath();
+                  if (path != null) await appState.updateDownloadDir(path);
                 },
               ),
-            ),
-            SwitchListTile(
-              title: const Text('Sync clipboard'),
-              value: appState.settings.clipboardSyncEnabled && appState.settings.clipboardSyncDeviceId != null,
-              onChanged: appState.settings.clipboardSyncDeviceId == null
-                  ? null
-                  : (v) => appState.setClipboardSync(enabled: v),
-            ),
-            if (appState.clipboardSyncError != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Text(appState.clipboardSyncError!, style: const TextStyle(color: Colors.orange, fontSize: 12)),
-              ),
-          ],
-          const Divider(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text('Paired devices', style: Theme.of(context).textTheme.labelLarge),
+            ],
           ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              'Paired devices can send you files with no prompts at all. Unpair one below to require pairing again.',
-              style: TextStyle(color: Colors.grey, fontSize: 12),
-            ),
-          ),
-          if (trustedIds.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text('No paired devices yet', style: TextStyle(color: Colors.grey)),
-            )
-          else
-            ...trustedIds.map(
-              (id) => ListTile(
-                title: Text(appState.pairing.nameFor(id) ?? id),
-                trailing: IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => appState.setTrusted(id, '', false),
+          const SizedBox(height: 22),
+          _SectionLabel('Theme', colors),
+          _SettingsCard(
+            colors: colors,
+            children: [
+              RadioGroup<ThemeMode>(
+                groupValue: appState.themeMode,
+                onChanged: (v) => appState.updateThemeMode(v!),
+                child: Column(
+                  children: [
+                    const RadioListTile<ThemeMode>(title: Text('System'), value: ThemeMode.system),
+                    _divider(colors),
+                    const RadioListTile<ThemeMode>(title: Text('Light'), value: ThemeMode.light),
+                    _divider(colors),
+                    const RadioListTile<ThemeMode>(title: Text('Dark'), value: ThemeMode.dark),
+                  ],
                 ),
               ),
-            ),
-          if (Platform.isAndroid) ...[
-            const Divider(),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: OutlinedButton.icon(
-                onPressed: () => _confirmQuit(context),
-                icon: const Icon(Icons.power_settings_new, color: Colors.red),
-                label: const Text('Quit LAN Share', style: TextStyle(color: Colors.red)),
+            ],
+          ),
+          const SizedBox(height: 22),
+          _SectionLabel('Clipboard sync', colors),
+          _SettingsCard(
+            colors: colors,
+            children: [
+              Padding(
+                padding: EdgeInsets.fromLTRB(14, 12, 14, trustedIds.isEmpty ? 12 : 0),
+                child: Text(
+                  trustedIds.isEmpty
+                      ? 'Pair with a device first to sync clipboards with it.'
+                      : 'Copy on one device, paste on the other — works both ways. On Android, '
+                          'new copies are only picked up while Tether is open (an Android privacy '
+                          'restriction); receiving works any time the app is running.',
+                  style: TextStyle(color: colors.muted, fontSize: 12.5, height: 1.4),
+                ),
               ),
+              if (trustedIds.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+                  child: DropdownButtonFormField<String>(
+                    initialValue: trustedIds.contains(appState.settings.clipboardSyncDeviceId)
+                        ? appState.settings.clipboardSyncDeviceId
+                        : null,
+                    decoration: const InputDecoration(labelText: 'Sync with'),
+                    items: trustedIds
+                        .map((id) => DropdownMenuItem(value: id, child: Text(appState.pairing.nameFor(id) ?? id)))
+                        .toList(),
+                    onChanged: (id) {
+                      if (id == null) return;
+                      appState.setClipboardSync(enabled: appState.settings.clipboardSyncEnabled, deviceId: id);
+                    },
+                  ),
+                ),
+                SwitchListTile(
+                  title: const Text('Sync clipboard'),
+                  value: appState.settings.clipboardSyncEnabled && appState.settings.clipboardSyncDeviceId != null,
+                  onChanged: appState.settings.clipboardSyncDeviceId == null
+                      ? null
+                      : (v) => appState.setClipboardSync(enabled: v),
+                ),
+                if (appState.clipboardSyncError != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                    child: Row(
+                      children: [
+                        Icon(Icons.wifi_off_rounded, size: 15, color: colors.away),
+                        const SizedBox(width: 6),
+                        Expanded(child: Text(appState.clipboardSyncError!, style: TextStyle(color: colors.away, fontSize: 12.5))),
+                      ],
+                    ),
+                  ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 22),
+          _SectionLabel('Paired devices', colors),
+          _SettingsCard(
+            colors: colors,
+            children: [
+              Padding(
+                padding: EdgeInsets.fromLTRB(14, 12, 14, trustedIds.isEmpty ? 12 : 4),
+                child: Text(
+                  'Paired devices can send you files with no prompts at all. Unpair one below to require pairing again.',
+                  style: TextStyle(color: colors.muted, fontSize: 12.5, height: 1.4),
+                ),
+              ),
+              if (trustedIds.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                  child: Text('No paired devices yet', style: TextStyle(color: colors.faint)),
+                )
+              else
+                for (var i = 0; i < trustedIds.length; i++) ...[
+                  _Row(
+                    title: appState.pairing.nameFor(trustedIds[i]) ?? trustedIds[i],
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 19),
+                      onPressed: () => appState.setTrusted(trustedIds[i], '', false),
+                    ),
+                  ),
+                  if (i != trustedIds.length - 1) _divider(colors),
+                ],
+            ],
+          ),
+          if (Platform.isAndroid) ...[
+            const SizedBox(height: 32),
+            OutlinedButton.icon(
+              onPressed: () => _confirmQuit(context),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: colors.danger,
+                side: BorderSide(color: colors.danger.withValues(alpha: 0.4)),
+              ),
+              icon: const Icon(Icons.power_settings_new_rounded),
+              label: const Text('Quit Tether'),
             ),
           ],
         ],
       ),
+    );
+  }
+}
+
+Widget _divider(TetherColors colors) => Divider(height: 1, indent: 14, endIndent: 14, color: colors.line);
+
+class _SectionLabel extends StatelessWidget {
+  final String title;
+  final TetherColors colors;
+  const _SectionLabel(this.title, this.colors);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
+      child: Text(
+        title.toUpperCase(),
+        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.6, color: colors.faint),
+      ),
+    );
+  }
+}
+
+class _SettingsCard extends StatelessWidget {
+  final TetherColors colors;
+  final List<Widget> children;
+  const _SettingsCard({required this.colors, required this.children});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: colors.line),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        color: Colors.transparent,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
+      ),
+    );
+  }
+}
+
+class _Row extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final bool monoSubtitle;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+
+  const _Row({required this.title, this.subtitle, this.monoSubtitle = false, this.trailing, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      title: Text(title),
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle!, style: monoSubtitle ? const TextStyle(fontFamily: 'Geist Mono', fontSize: 12.5) : null),
+      trailing: trailing,
+      onTap: onTap,
     );
   }
 }

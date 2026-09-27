@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../models/transfer.dart';
 import '../../state/app_state.dart';
+import '../../theme/tether_theme.dart';
 import '../../util/format.dart';
 import '../../util/reveal.dart';
 
@@ -15,72 +16,99 @@ class TransferTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final isIncoming = record.direction == TransferDirection.incoming;
-    final isActive =
-        record.status == TransferStatus.pendingApproval || record.status == TransferStatus.transferring;
-    final canReveal =
-        !isActive && isIncoming && record.status == TransferStatus.completed && record.savedPaths.isNotEmpty;
-    final title = record.files.length == 1
-        ? record.files.first.name
-        : '${record.files.length} files';
+    final isActive = record.status == TransferStatus.pendingApproval || record.status == TransferStatus.transferring;
+    final canReveal = !isActive && isIncoming && record.status == TransferStatus.completed && record.savedPaths.isNotEmpty;
+    final title = record.files.length == 1 ? record.files.first.name : '${record.files.length} files';
     final subtitle = isIncoming ? 'From ${record.peerName}' : 'To ${record.peerName}';
+    final statusColor = _statusColor(colors, record.status);
 
-    return ListTile(
-      leading: Icon(
-        isIncoming ? Icons.download_rounded : Icons.upload_rounded,
-        color: _statusColor(context, record.status),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: colors.line),
       ),
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: record.status == TransferStatus.transferring
-          ? Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(subtitle),
-                  const SizedBox(height: 4),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(value: record.progress == 0 ? null : record.progress),
-                  ),
-                ],
-              ),
-            )
-          : Text('$subtitle · ${_statusLabel(record.status)}'),
-      trailing: isActive
-          ? IconButton(
-              icon: const Icon(Icons.close),
-              tooltip: 'Cancel',
-              onPressed: () => context.read<AppState>().cancelTransfer(record.id),
-            )
-          : Row(
-              mainAxisSize: MainAxisSize.min,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.14), shape: BoxShape.circle),
+            child: Icon(isIncoming ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded, color: statusColor, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(formatBytes(record.totalBytes), style: Theme.of(context).textTheme.bodySmall),
-                if (canReveal)
-                  IconButton(
-                    icon: const Icon(Icons.folder_open, size: 20),
-                    tooltip: 'Show in folder',
-                    onPressed: () => record.savedPaths.length == 1
-                        ? revealFile(record.savedPaths.first)
-                        : openFolder(File(record.savedPaths.first).parent.path),
+                Text(title, style: Theme.of(context).textTheme.titleSmall, maxLines: 1, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 3),
+                if (record.status == TransferStatus.transferring) ...[
+                  Text(subtitle, style: TextStyle(color: colors.muted, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(99),
+                    child: LinearProgressIndicator(
+                      value: record.progress == 0 ? null : record.progress,
+                      minHeight: 5,
+                      backgroundColor: colors.line,
+                      valueColor: AlwaysStoppedAnimation(colors.accentText),
+                    ),
+                  ),
+                ] else
+                  Text(
+                    '$subtitle · ${_statusLabel(record.status)}',
+                    style: TextStyle(color: colors.muted, fontSize: 13),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
               ],
             ),
+          ),
+          const SizedBox(width: 8),
+          isActive
+              ? IconButton(
+                  icon: const Icon(Icons.close_rounded, size: 20),
+                  tooltip: 'Cancel',
+                  onPressed: () => context.read<AppState>().cancelTransfer(record.id),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(formatBytes(record.totalBytes), style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12, color: colors.faint)),
+                    if (canReveal)
+                      IconButton(
+                        icon: const Icon(Icons.folder_open_rounded, size: 19),
+                        tooltip: 'Show in folder',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                        onPressed: () => record.savedPaths.length == 1
+                            ? revealFile(record.savedPaths.first)
+                            : openFolder(File(record.savedPaths.first).parent.path),
+                      ),
+                  ],
+                ),
+        ],
+      ),
     );
   }
 
-  Color? _statusColor(BuildContext context, TransferStatus status) {
+  Color _statusColor(TetherColors colors, TransferStatus status) {
     switch (status) {
       case TransferStatus.completed:
-        return Colors.green;
+        return colors.ok;
       case TransferStatus.failed:
       case TransferStatus.declined:
-        return Colors.red;
+        return colors.danger;
       case TransferStatus.canceled:
-        return Colors.grey;
+        return colors.faint;
       default:
-        return Theme.of(context).colorScheme.primary;
+        return colors.accentText;
     }
   }
 

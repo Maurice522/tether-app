@@ -1,4 +1,4 @@
-package com.mauricerana.lan_share
+package com.mauricerana.tether
 
 import android.Manifest
 import android.content.Intent
@@ -15,9 +15,9 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     companion object {
-        private const val TAG = "LanShareMainActivity"
+        private const val TAG = "TetherMainActivity"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
-        private const val QUIT_CHANNEL = "com.mauricerana.lan_share/quit"
+        private const val QUIT_CHANNEL = "com.mauricerana.tether/quit"
     }
 
     // The Dart side stops discovery/the transfer server first (so peers
@@ -33,7 +33,7 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, QUIT_CHANNEL).setMethodCallHandler { call, result ->
             if (call.method == "quit") {
                 try {
-                    stopService(Intent(this, LanShareForegroundService::class.java))
+                    stopService(Intent(this, TetherForegroundService::class.java))
                 } catch (e: Exception) {
                     Log.e(TAG, "failed to stop foreground service on quit", e)
                 }
@@ -70,7 +70,7 @@ class MainActivity : FlutterActivity() {
         }
 
         try {
-            ContextCompat.startForegroundService(this, Intent(this, LanShareForegroundService::class.java))
+            ContextCompat.startForegroundService(this, Intent(this, TetherForegroundService::class.java))
         } catch (e: Exception) {
             Log.e(TAG, "failed to start foreground service", e)
         }

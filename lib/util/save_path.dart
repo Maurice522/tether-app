@@ -18,13 +18,13 @@ Future<String> defaultDownloadDir() async {
   if (Platform.isAndroid) {
     final dirs = await getExternalStorageDirectories();
     if (dirs != null && dirs.isNotEmpty) {
-      final path = p.join(dirs.first.path, 'LanShare');
+      final path = p.join(dirs.first.path, 'Tether');
       await Directory(path).create(recursive: true);
       return path;
     }
   }
   final fallback = await getApplicationDocumentsDirectory();
-  final path = p.join(fallback.path, 'LanShare');
+  final path = p.join(fallback.path, 'Tether');
   await Directory(path).create(recursive: true);
   return path;
 }

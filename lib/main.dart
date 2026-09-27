@@ -4,24 +4,25 @@ import 'package:provider/provider.dart';
 import 'screens/home_screen.dart';
 import 'services/desktop_window_service.dart';
 import 'state/app_state.dart';
+import 'theme/tether_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final desktopWindow = DesktopWindowService();
   await desktopWindow.init();
-  runApp(LanShareApp(desktopWindow: desktopWindow));
+  runApp(TetherApp(desktopWindow: desktopWindow));
 }
 
-class LanShareApp extends StatefulWidget {
+class TetherApp extends StatefulWidget {
   final DesktopWindowService desktopWindow;
 
-  const LanShareApp({super.key, required this.desktopWindow});
+  const TetherApp({super.key, required this.desktopWindow});
 
   @override
-  State<LanShareApp> createState() => _LanShareAppState();
+  State<TetherApp> createState() => _TetherAppState();
 }
 
-class _LanShareAppState extends State<LanShareApp> {
+class _TetherAppState extends State<TetherApp> {
   late final AppState _appState = AppState(desktopWindow: widget.desktopWindow);
 
   @override
@@ -43,16 +44,19 @@ class _LanShareAppState extends State<LanShareApp> {
       child: Consumer<AppState>(
         builder: (context, appState, _) {
           return MaterialApp(
-            title: 'LAN Share',
+            title: 'Tether',
             debugShowCheckedModeBanner: false,
             themeMode: appState.themeMode,
-            theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal)),
-            darkTheme: ThemeData(
-              colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal, brightness: Brightness.dark),
-            ),
+            theme: buildTetherTheme(Brightness.light),
+            darkTheme: buildTetherTheme(Brightness.dark),
             home: appState.ready
                 ? const HomeScreen()
-                : const Scaffold(body: Center(child: CircularProgressIndicator())),
+                : Container(
+                    color: TetherColors.dark.bg,
+                    child: Center(
+                      child: CircularProgressIndicator(color: TetherColors.dark.accentText),
+                    ),
+                  ),
           );
         },
       ),

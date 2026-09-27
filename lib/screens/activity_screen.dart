@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../theme/tether_theme.dart';
 import 'widgets/transfer_tile.dart';
 
 class ActivityScreen extends StatelessWidget {
@@ -10,6 +11,7 @@ class ActivityScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
+    final colors = context.colors;
     final active = appState.activeTransfers.values.toList();
     final history = appState.completedTransfers;
 
@@ -17,9 +19,18 @@ class ActivityScreen extends StatelessWidget {
       return Scaffold(
         appBar: AppBar(title: const Text('Activity')),
         body: Center(
-          child: Text(
-            'No transfers yet',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 76,
+                height: 76,
+                decoration: BoxDecoration(color: colors.surface2, shape: BoxShape.circle),
+                child: Icon(Icons.swap_vert_rounded, size: 34, color: colors.faint),
+              ),
+              const SizedBox(height: 20),
+              Text('No transfers yet', style: Theme.of(context).textTheme.titleMedium),
+            ],
           ),
         ),
       );
@@ -35,17 +46,19 @@ class ActivityScreen extends StatelessWidget {
               tooltip: 'Clear history',
               onPressed: () => appState.clearHistory(),
             ),
+          const SizedBox(width: 4),
         ],
       ),
       body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
           if (active.isNotEmpty) ...[
-            const _SectionHeader('In progress'),
+            _SectionHeader('In progress', colors),
             ...active.map((r) => TransferTile(record: r)),
-            const Divider(height: 1),
+            const SizedBox(height: 8),
           ],
           if (history.isNotEmpty) ...[
-            const _SectionHeader('History'),
+            _SectionHeader('History', colors),
             ...history.map((r) => TransferTile(record: r)),
           ],
         ],
@@ -56,15 +69,16 @@ class ActivityScreen extends StatelessWidget {
 
 class _SectionHeader extends StatelessWidget {
   final String title;
-  const _SectionHeader(this.title);
+  final TetherColors colors;
+  const _SectionHeader(this.title, this.colors);
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+      padding: const EdgeInsets.fromLTRB(2, 4, 2, 10),
       child: Text(
-        title,
-        style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Theme.of(context).colorScheme.primary),
+        title.toUpperCase(),
+        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.6, color: colors.faint),
       ),
     );
   }

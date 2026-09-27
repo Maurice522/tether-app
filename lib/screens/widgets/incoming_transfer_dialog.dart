@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../models/transfer.dart';
 import '../../state/app_state.dart';
+import '../../theme/tether_theme.dart';
 import '../../util/format.dart';
 
 /// Accept/decline prompt for an incoming offer. If the sender isn't
@@ -23,6 +24,7 @@ class _IncomingTransferDialogState extends State<IncomingTransferDialog> {
   @override
   Widget build(BuildContext context) {
     final appState = context.read<AppState>();
+    final colors = context.colors;
     final request = widget.request;
     final alreadyTrusted = appState.isSenderTrusted(request.senderId);
     final totalBytes = request.files.fold<int>(0, (s, f) => s + f.size);
@@ -34,21 +36,23 @@ class _IncomingTransferDialogState extends State<IncomingTransferDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(request.senderAddress, style: Theme.of(context).textTheme.bodySmall),
+            Text(request.senderAddress, style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12.5, color: colors.muted)),
             const SizedBox(height: 12),
-            ConstrainedBox(
+            Container(
               constraints: const BoxConstraints(maxHeight: 160),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(color: colors.surface2, borderRadius: BorderRadius.circular(12)),
               child: ListView(
                 shrinkWrap: true,
                 children: request.files
                     .map((f) => Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          padding: const EdgeInsets.symmetric(vertical: 6),
                           child: Row(
                             children: [
-                              const Icon(Icons.insert_drive_file_outlined, size: 18),
+                              Icon(Icons.insert_drive_file_outlined, size: 17, color: colors.muted),
                               const SizedBox(width: 8),
-                              Expanded(child: Text(f.name, overflow: TextOverflow.ellipsis)),
-                              Text(formatBytes(f.size), style: Theme.of(context).textTheme.bodySmall),
+                              Expanded(child: Text(f.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5))),
+                              Text(formatBytes(f.size), style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12, color: colors.faint)),
                             ],
                           ),
                         ))
@@ -56,21 +60,24 @@ class _IncomingTransferDialogState extends State<IncomingTransferDialog> {
               ),
             ),
             const SizedBox(height: 8),
-            Text('Total: ${formatBytes(totalBytes)}', style: Theme.of(context).textTheme.bodySmall),
+            Text('Total: ${formatBytes(totalBytes)}', style: TextStyle(color: colors.muted, fontSize: 12.5)),
             const SizedBox(height: 16),
             if (!alreadyTrusted) ...[
-              const Text('Confirm this code matches the sender\'s screen:'),
-              const SizedBox(height: 6),
-              Center(
-                child: Text(
-                  request.pairingCode,
-                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 4,
-                      ),
+              Text("Confirm this code matches the sender's screen:", style: TextStyle(color: colors.muted)),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 18),
+                decoration: BoxDecoration(color: colors.accentGlow, borderRadius: BorderRadius.circular(14)),
+                child: Center(
+                  child: Text(
+                    request.pairingCode,
+                    style:
+                        TextStyle(fontFamily: 'Geist Mono', fontSize: 32, fontWeight: FontWeight.w600, letterSpacing: 6, color: colors.accentText),
+                  ),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               CheckboxListTile(
                 value: _trustDevice,
                 onChanged: (v) => setState(() => _trustDevice = v ?? false),
@@ -81,10 +88,10 @@ class _IncomingTransferDialogState extends State<IncomingTransferDialog> {
               ),
             ] else
               Row(
-                children: const [
-                  Icon(Icons.verified_user_outlined, size: 18, color: Colors.green),
-                  SizedBox(width: 6),
-                  Text('Trusted device'),
+                children: [
+                  Icon(Icons.verified_user_rounded, size: 17, color: colors.ok),
+                  const SizedBox(width: 6),
+                  const Text('Trusted device'),
                 ],
               ),
           ],

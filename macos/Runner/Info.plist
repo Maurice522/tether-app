@@ -29,6 +29,6 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>LAN Share discovers other devices on your Wi-Fi network so you can send and receive files with them.</string>
+	<string>Tether discovers other devices on your Wi-Fi network so you can send and receive files with them.</string>
 </dict>
 </plist>

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../state/app_state.dart';
+import '../../theme/tether_theme.dart';
 import '../../util/format.dart';
 
 /// Fallback for when broadcast discovery isn't finding a peer — probes an
@@ -42,6 +43,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
+    final colors = context.colors;
     final recent = appState.manualDevices.all;
     return AlertDialog(
       title: const Text('Add device by IP'),
@@ -49,10 +51,10 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             "Use this if a paired or nearby device isn't showing up automatically — "
             'enter its IP address (visible in its own Wi-Fi settings).',
-            style: TextStyle(color: Colors.grey, fontSize: 13),
+            style: TextStyle(color: colors.muted, fontSize: 13, height: 1.4),
           ),
           const SizedBox(height: 16),
           TextField(
@@ -63,21 +65,33 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
             onSubmitted: (_) => _connecting ? null : _connect(),
           ),
           if (appState.manualAddError != null) ...[
-            const SizedBox(height: 8),
-            Text(appState.manualAddError!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Icon(Icons.error_outline_rounded, size: 15, color: colors.danger),
+                const SizedBox(width: 6),
+                Expanded(child: Text(appState.manualAddError!, style: TextStyle(color: colors.danger, fontSize: 13))),
+              ],
+            ),
           ],
           if (recent.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            Text('Recent', style: Theme.of(context).textTheme.labelMedium),
+            const SizedBox(height: 18),
+            Text('RECENT', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.6, color: colors.faint)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
-              runSpacing: 4,
+              runSpacing: 8,
               children: recent
                   .map(
                     (d) => ActionChip(
-                      avatar: Text(platformIcon(d.platform)),
+                      avatar: CircleAvatar(
+                        radius: 10,
+                        backgroundColor: colors.accentGlow,
+                        child: Icon(platformIconData(d.platform), size: 12, color: colors.accentText),
+                      ),
                       label: Text('${d.name} (${d.address})'),
+                      backgroundColor: colors.surface2,
+                      side: BorderSide(color: colors.line),
                       onPressed: _connecting ? null : () => _connect(d.address),
                     ),
                   )
@@ -94,7 +108,7 @@ class _AddDeviceDialogState extends State<AddDeviceDialog> {
         FilledButton(
           onPressed: _connecting ? null : _connect,
           child: _connecting
-              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: colors.accentInk))
               : const Text('Connect'),
         ),
       ],

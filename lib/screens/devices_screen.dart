@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../models/device.dart';
 import '../state/app_state.dart';
+import '../theme/tether_theme.dart';
 import '../util/format.dart';
 import 'widgets/add_device_dialog.dart';
 import 'widgets/outgoing_transfer_dialog.dart';
@@ -52,29 +53,32 @@ class DevicesScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
     final devices = appState.devices;
+    final colors = context.colors;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Nearby Devices'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.add),
+            icon: const Icon(Icons.add_rounded),
             tooltip: 'Add device by IP',
             onPressed: () => showDialog(context: context, builder: (_) => const AddDeviceDialog()),
           ),
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh_rounded),
             tooltip: 'Refresh',
             onPressed: () => appState.refreshDevices(),
           ),
+          const SizedBox(width: 4),
         ],
       ),
       body: Column(
         children: [
           if (appState.startupError != null)
             MaterialBanner(
-              backgroundColor: Theme.of(context).colorScheme.errorContainer,
-              content: Text(appState.startupError!),
+              backgroundColor: colors.danger.withValues(alpha: 0.12),
+              leading: Icon(Icons.error_outline_rounded, color: colors.danger),
+              content: Text(appState.startupError!, style: TextStyle(color: colors.text)),
               actions: [
                 TextButton(
                   onPressed: () => appState.dismissStartupError(),
@@ -84,27 +88,80 @@ class DevicesScreen extends StatelessWidget {
             ),
           Expanded(
             child: RefreshIndicator(
+              color: colors.accentText,
+              backgroundColor: colors.surface,
               onRefresh: () async => appState.refreshDevices(),
               child: devices.isEmpty
                   ? const _EmptyState()
-                  : ListView.separated(
-                itemCount: devices.length,
-                separatorBuilder: (_, _) => const Divider(height: 1),
-                itemBuilder: (ctx, index) {
-                  final device = devices[index];
-                  final trusted = appState.isSenderTrusted(device.id);
-                  return _DeviceTile(
-                    device: device,
-                    trusted: trusted,
-                    onSend: () => _pickAndSend(context, device),
-                    onPair: () => _pair(context, device),
-                  );
-                },
-              ),
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                      itemCount: devices.length,
+                      itemBuilder: (ctx, index) {
+                        final device = devices[index];
+                        final trusted = appState.isSenderTrusted(device.id);
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _EntranceFade(
+                            index: index,
+                            child: _DeviceTile(
+                              device: device,
+                              trusted: trusted,
+                              onSend: () => _pickAndSend(context, device),
+                              onPair: () => _pair(context, device),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// A gentle staggered fade-and-rise for list items on first appearance —
+/// the kind of small motion that makes a list feel considered rather than
+/// items just snapping into place.
+class _EntranceFade extends StatefulWidget {
+  final int index;
+  final Widget child;
+
+  const _EntranceFade({required this.index, required this.child});
+
+  @override
+  State<_EntranceFade> createState() => _EntranceFadeState();
+}
+
+class _EntranceFadeState extends State<_EntranceFade> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _fade;
+  late final Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 320));
+    final curved = CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
+    _fade = curved;
+    _slide = Tween<Offset>(begin: const Offset(0, 0.06), end: Offset.zero).animate(curved);
+    Future.delayed(Duration(milliseconds: 30 * widget.index.clamp(0, 6)), () {
+      if (mounted) _controller.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(position: _slide, child: widget.child),
     );
   }
 }
@@ -136,25 +193,53 @@ class _DeviceTileState extends State<_DeviceTile> {
   Widget build(BuildContext context) {
     final device = widget.device;
     final trusted = widget.trusted;
+    final colors = context.colors;
 
-    final tile = Container(
-      color: _dragging ? Theme.of(context).colorScheme.primaryContainer : null,
-      child: ListTile(
-        leading: Text(platformIcon(device.platform), style: const TextStyle(fontSize: 28)),
-        title: Text(device.name),
-        subtitle: Text(
-          _dragging ? 'Drop to send' : '${device.address}${trusted ? ' · Paired' : ''}',
-        ),
-        trailing: trusted
-            ? FilledButton.tonal(onPressed: widget.onSend, child: const Text('Send'))
-            : Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  OutlinedButton(onPressed: widget.onPair, child: const Text('Pair')),
-                  const SizedBox(width: 8),
-                  FilledButton.tonal(onPressed: widget.onSend, child: const Text('Send')),
-                ],
-              ),
+    final tile = AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      decoration: BoxDecoration(
+        color: _dragging ? colors.accentGlow : colors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _dragging ? colors.accentText : colors.line, width: _dragging ? 1.6 : 1),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 22,
+            backgroundColor: trusted ? colors.accentGlow : colors.surface2,
+            child: Icon(platformIconData(device.platform), color: trusted ? colors.accentText : colors.muted, size: 22),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(device.name, style: Theme.of(context).textTheme.titleSmall, maxLines: 1, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 2),
+                Text(
+                  _dragging ? 'Drop to send' : device.address,
+                  style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12.5, color: _dragging ? colors.accentText : colors.muted),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          if (trusted) ...[
+            Icon(Icons.link_rounded, size: 15, color: colors.accentText),
+            const SizedBox(width: 6),
+          ],
+          trusted
+              ? FilledButton(onPressed: widget.onSend, child: const Text('Send'))
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    OutlinedButton(onPressed: widget.onPair, child: const Text('Pair')),
+                    const SizedBox(width: 8),
+                    FilledButton(onPressed: widget.onSend, child: const Text('Send')),
+                  ],
+                ),
+        ],
       ),
     );
 
@@ -178,29 +263,54 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.wifi_tethering, size: 48, color: Colors.grey),
-            const SizedBox(height: 16),
-            Text(
-              'Looking for devices on your network...\nMake sure other devices have LAN Share open and are on the same Wi-Fi.',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey),
+    final colors = context.colors;
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 80),
+      children: [
+        Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 40),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 76,
+                  height: 76,
+                  decoration: BoxDecoration(color: colors.surface2, shape: BoxShape.circle),
+                  child: Icon(Icons.wifi_tethering_rounded, size: 34, color: colors.faint),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Looking for devices…',
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Make sure other devices have Tether open and are on the same Wi-Fi.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: colors.muted, height: 1.4),
+                ),
+                const SizedBox(height: 28),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: colors.surface2,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: colors.line),
+                  ),
+                  child: Text(
+                    "Can't find a device? Tap + above to connect using its IP address — "
+                    'open Settings on that device to see its IP.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: colors.muted, fontSize: 12.5, height: 1.4),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 20),
-            Text(
-              "Can't find a device? Tap the + above to connect using its IP address instead — "
-              "open Settings on that device to see its IP.",
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
-            ),
-          ],
+          ),
         ),
-      ),
+      ],
     );
   }
 }

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/device.dart';
 import '../models/remote_entry.dart';
 import '../state/app_state.dart';
+import '../theme/tether_theme.dart';
 import '../util/format.dart';
 
 /// Browses one paired device's shared folder, starting at its root.
@@ -57,6 +58,7 @@ class _RemoteFolderScreenState extends State<RemoteFolderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final title = _path.isEmpty ? widget.device.name : _path.split('/').last;
     return PopScope(
       canPop: _path.isEmpty,
@@ -66,34 +68,36 @@ class _RemoteFolderScreenState extends State<RemoteFolderScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: Text(title),
-          leading: _path.isEmpty
-              ? null
-              : IconButton(icon: const Icon(Icons.arrow_back), onPressed: _goUp),
+          leading: _path.isEmpty ? null : IconButton(icon: const Icon(Icons.arrow_back_rounded), onPressed: _goUp),
           actions: [
             IconButton(
-              icon: const Icon(Icons.refresh),
+              icon: const Icon(Icons.refresh_rounded),
               tooltip: 'Refresh',
               onPressed: () => setState(() => _future = _load()),
             ),
+            const SizedBox(width: 4),
           ],
         ),
         body: RefreshIndicator(
+          color: colors.accentText,
+          backgroundColor: colors.surface,
           onRefresh: () async => setState(() => _future = _load()),
           child: FutureBuilder<List<RemoteEntry>>(
             future: _future,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
+                return Center(child: CircularProgressIndicator(color: colors.accentText));
               }
               if (snapshot.hasError) {
                 return ListView(
+                  padding: const EdgeInsets.symmetric(vertical: 64),
                   children: [
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 64),
+                      padding: const EdgeInsets.symmetric(horizontal: 32),
                       child: Text(
                         'Could not load this folder.\n${snapshot.error}',
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.grey),
+                        style: TextStyle(color: colors.muted),
                       ),
                     ),
                   ],
@@ -102,31 +106,72 @@ class _RemoteFolderScreenState extends State<RemoteFolderScreen> {
               final entries = snapshot.data ?? const [];
               if (entries.isEmpty) {
                 return ListView(
-                  children: const [
-                    Padding(
-                      padding: EdgeInsets.symmetric(vertical: 64),
-                      child: Text('Empty folder', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
-                    ),
+                  padding: const EdgeInsets.symmetric(vertical: 64),
+                  children: [
+                    Center(child: Text('Empty folder', style: TextStyle(color: colors.muted))),
                   ],
                 );
               }
-              return ListView.separated(
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                 itemCount: entries.length,
-                separatorBuilder: (_, _) => const Divider(height: 1),
                 itemBuilder: (ctx, index) {
                   final entry = entries[index];
-                  return ListTile(
-                    leading: Icon(entry.isDir ? Icons.folder : Icons.insert_drive_file_outlined),
-                    title: Text(entry.name),
-                    subtitle: entry.isDir ? null : Text(formatBytes(entry.size)),
-                    trailing: entry.isDir
-                        ? const Icon(Icons.chevron_right)
-                        : IconButton(
-                            icon: const Icon(Icons.download_outlined),
-                            tooltip: 'Download',
-                            onPressed: () => _download(entry),
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    decoration: BoxDecoration(
+                      color: colors.surface,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: colors.line),
+                    ),
+                    child: Material(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(14),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: entry.isDir ? () => _openDir(entry.name) : () => _download(entry),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 36,
+                                height: 36,
+                                decoration: BoxDecoration(
+                                  color: entry.isDir ? colors.accentGlow : colors.surface2,
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Icon(
+                                  entry.isDir ? Icons.folder_rounded : Icons.insert_drive_file_outlined,
+                                  size: 19,
+                                  color: entry.isDir ? colors.accentText : colors.muted,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodyMedium),
+                                    if (!entry.isDir) ...[
+                                      const SizedBox(height: 2),
+                                      Text(formatBytes(entry.size), style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12, color: colors.muted)),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                              entry.isDir
+                                  ? Icon(Icons.chevron_right_rounded, color: colors.faint)
+                                  : IconButton(
+                                      icon: const Icon(Icons.download_rounded, size: 20),
+                                      tooltip: 'Download',
+                                      onPressed: () => _download(entry),
+                                    ),
+                            ],
                           ),
-                    onTap: entry.isDir ? () => _openDir(entry.name) : () => _download(entry),
+                        ),
+                      ),
+                    ),
                   );
                 },
               );

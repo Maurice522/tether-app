@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 
-const _quitChannel = MethodChannel('com.mauricerana.lan_share/quit');
+const _quitChannel = MethodChannel('com.mauricerana.tether/quit');
 
 /// Tells the native side to stop the foreground service and terminate
 /// the process. Only meaningful on Android — the foreground service that
