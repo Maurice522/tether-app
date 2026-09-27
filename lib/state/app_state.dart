@@ -20,6 +20,7 @@ import '../services/pairing_store.dart';
 import '../services/settings_store.dart';
 import '../services/transfer_client.dart' show TransferClient, TransferCanceledException;
 import '../services/transfer_server.dart';
+import '../util/android_quit.dart';
 import '../util/net_log.dart';
 import '../util/network_info.dart';
 import '../util/pairing_code.dart';
@@ -162,6 +163,25 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     super.dispose();
   }
 
+  /// Fully quits the app on Android: closing the window there only
+  /// backgrounds it (by design — the foreground service keeps discovery,
+  /// the transfer server, and clipboard sync running so other devices can
+  /// still reach you), so a deliberate quit needs its own explicit
+  /// action, same as the desktop tray's separate Show/Quit. Stops
+  /// discovery and the server first so peers see a clean "bye" instead of
+  /// this device just timing out, then tells the native side to stop the
+  /// foreground service and terminate the process.
+  Future<void> quitApp() async {
+    netLog('app', 'quitting: stopping discovery and server');
+    _clipboardTimer?.cancel();
+    _manualDeviceRefreshTimer?.cancel();
+    await _discovery?.stop();
+    await _server?.stop();
+    if (Platform.isAndroid) {
+      await quitAndroidApp();
+    }
+  }
+
   /// Android blocks a backgrounded app from reading the system clipboard
   /// at all, so the periodic poll may have spent the whole time in the
   /// background silently seeing a stale/blocked read — it can't detect a
@@ -286,14 +306,17 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// already known to have failed. Returns the matching device, or null
   /// if nothing on the subnet currently claims that id.
   Future<Device?> _scanSubnetFor(String targetId, {String? excludeAddress}) async {
-    final myIps = await localIpAddresses();
-    if (myIps.isEmpty) return null;
-    final parts = myIps.first.split('.');
+    // A phone with mobile data on alongside Wi-Fi also carries a
+    // carrier-NAT address that isn't part of the LAN at all — sweeping
+    // that subnet instead of the real one silently finds nothing.
+    final myIp = await primaryLanAddress();
+    if (myIp == null) return null;
+    final parts = myIp.split('.');
     if (parts.length != 4) return null;
     final prefix = '${parts[0]}.${parts[1]}.${parts[2]}';
 
     final candidates = [for (var i = 1; i <= 254; i++) '$prefix.$i']
-      ..removeWhere((ip) => ip == excludeAddress || ip == myIps.first);
+      ..removeWhere((ip) => ip == excludeAddress || ip == myIp);
 
     final results = await Future.wait(
       candidates.map((ip) async {

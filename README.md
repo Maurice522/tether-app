@@ -73,7 +73,16 @@ Implemented (Phases 1–4 core logic):
   500ms timeout each) for whichever address now answers with the known
   device id. Also runs once immediately on startup and on app resume.
   Works identically on every platform since it's just ordinary HTTP
-  requests.
+  requests. The subnet to sweep comes from `primaryLanAddress()`
+  (`lib/util/network_info.dart`), which prefers an RFC 1918 private
+  address over anything else — a phone with mobile data on alongside
+  Wi-Fi also carries a carrier-NAT address (RFC 6598, `100.64.0.0/10`),
+  and sweeping that instead of the real LAN silently finds nothing. Both
+  the corrupted-address recovery and this multi-interface fix were
+  verified live: forcing a stale IP into the Mac's persisted store and
+  toggling a phone's Wi-Fi to add a second interface both self-corrected
+  on the next resolution cycle, confirmed via device logs and a fresh
+  screenshot of the corrected address.
 - **Remote browsing** (`lib/screens/browse_screen.dart`,
   `remote_folder_screen.dart`, `GET /browse`, `GET /fetch`) — a new
   **Browse** tab lets you open a paired, currently-online device's shared
@@ -124,6 +133,16 @@ Implemented (Phases 1–4 core logic):
   system's own app-quit shortcut) actually exits. No-op on Android/iOS.
   An incoming transfer or pair request also brings the window to the
   front automatically, so the prompt isn't missed behind other windows.
+- **Quit on Android** (`android/.../LanShareForegroundService.kt`,
+  `MainActivity.configureFlutterEngine`, `AppState.quitApp`, Settings'
+  "Quit LAN Share" button) — the Android equivalent of desktop's tray
+  Quit. Closing the app normally only backgrounds it, by design (the
+  foreground service keeps discovery/the server/clipboard sync running);
+  quitting stops discovery and the server first so peers see a clean
+  "bye" instead of a timeout, then a MethodChannel call tells the native
+  side to stop the foreground service and kill the process outright.
+  Verified on a real device: `pidof` confirms the process is fully gone
+  after quitting, with no crash.
 
 Verified so far: `flutter analyze`/`flutter test` pass; `flutter build
 macos --debug` builds and the app launches/runs stably; `flutter build apk

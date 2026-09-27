@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
@@ -47,6 +49,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Device name saved'), duration: Duration(seconds: 2)),
     );
+  }
+
+  Future<void> _confirmQuit(BuildContext context) async {
+    final appState = context.read<AppState>();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Quit LAN Share?'),
+        content: const Text(
+          "This fully stops the app, including discovery and the background service — other "
+          "devices won't be able to reach you until you reopen it. Closing the app normally "
+          '(without quitting) keeps all of that running.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Quit')),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await appState.quitApp();
+    }
   }
 
   @override
@@ -200,6 +224,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ),
+          if (Platform.isAndroid) ...[
+            const Divider(),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: OutlinedButton.icon(
+                onPressed: () => _confirmQuit(context),
+                icon: const Icon(Icons.power_settings_new, color: Colors.red),
+                label: const Text('Quit LAN Share', style: TextStyle(color: Colors.red)),
+              ),
+            ),
+          ],
         ],
       ),
     );
