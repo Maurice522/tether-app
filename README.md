@@ -1,11 +1,16 @@
-# LAN Share
+# Tether
 
 A custom cross-platform (macOS, Windows, Android) file-sharing app for your
 own LAN. No cloud, no accounts — devices discover each other over UDP
-broadcast and transfer files directly over HTTP.
+broadcast and transfer files directly over HTTP. Named and branded to match
+the existing web-based [Tether](https://tether.mauricerana.workers.dev)
+clipboard tool (same logo, same color palette) — this is a separate, native
+sibling app with a much broader feature set (files/folders, not just
+clipboard text), not a rebuild of the web version.
 
 See [`custom-lan-file-share-dev-plan.md`](custom-lan-file-share-dev-plan.md)
-for the original phased plan this implements.
+for the original phased plan this implements (written under the project's
+original working name, LAN Share).
 
 ## Status
 
@@ -103,10 +108,10 @@ Implemented (Phases 1–4 core logic):
   real device: the app process and its receiver keep running fine in the
   background (a push from the other device is applied immediately, any
   time), but the periodic poll's read is silently blocked/stale the whole
-  time LAN Share isn't focused, so it can't detect a copy made while
+  time Tether isn't focused, so it can't detect a copy made while
   backgrounded no matter how often it ticks. `AppState` observes app
   lifecycle and forces one immediate check on resume, so switching back
-  to LAN Share (not a full close/reopen) is enough to pick up and push
+  to Tether (not a full close/reopen) is enough to pick up and push
   whatever was copied while it was in the background.
 - **Background survival on Android** (`android/app/src/main/kotlin/.../LanShareForegroundService.kt`,
   started from `MainActivity.onCreate`) — without this, Android froze the
@@ -116,7 +121,7 @@ Implemented (Phases 1–4 core logic):
   changed. A minimal foreground service (no Dart/background-isolate work
   of its own — it only exists to hold foreground-service privilege) now
   keeps the process alive while backgrounded, with a persistent low-
-  priority notification ("LAN Share is running") as the unavoidable
+  priority notification ("Tether is running") as the unavoidable
   visible side effect Android requires for this. Requests
   `POST_NOTIFICATIONS` at launch on Android 13+. Uses the `dataSync`
   foreground service type, which Android 15+ caps at ~6 cumulative hours
@@ -127,7 +132,7 @@ Implemented (Phases 1–4 core logic):
 - **Background/tray on desktop** (`lib/services/desktop_window_service.dart`,
   `window_manager` + `tray_manager`) — on macOS and Windows, closing the
   window hides it instead of quitting the app; a tray/menu-bar icon
-  offers "Show LAN Share" and "Quit". This keeps the transfer server and
+  offers "Show Tether" and "Quit". This keeps the transfer server and
   discovery broadcast running so other devices can keep reaching you
   after you close the window — only Quit (from the tray menu, or the
   system's own app-quit shortcut) actually exits. No-op on Android/iOS.
@@ -135,7 +140,7 @@ Implemented (Phases 1–4 core logic):
   front automatically, so the prompt isn't missed behind other windows.
 - **Quit on Android** (`android/.../LanShareForegroundService.kt`,
   `MainActivity.configureFlutterEngine`, `AppState.quitApp`, Settings'
-  "Quit LAN Share" button) — the Android equivalent of desktop's tray
+  "Quit Tether" button) — the Android equivalent of desktop's tray
   Quit. Closing the app normally only backgrounds it, by design (the
   foreground service keeps discovery/the server/clipboard sync running);
   quitting stops discovery and the server first so peers see a clean
