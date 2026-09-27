@@ -231,13 +231,18 @@ class TransferClient {
   /// the manual "add device by IP" fallback for when broadcast discovery
   /// isn't reaching a peer (e.g. a router that filters broadcast/multicast
   /// between Wi-Fi clients while unicast still works fine).
-  Future<Device> probeDevice({required String address, int port = TransferServer.defaultPort}) async {
-    final client = HttpClient();
+  Future<Device> probeDevice({
+    required String address,
+    int port = TransferServer.defaultPort,
+    Duration timeout = const Duration(seconds: 8),
+    bool quiet = false,
+  }) async {
+    final client = HttpClient()..connectionTimeout = timeout;
     try {
       final uri = Uri.parse('http://$address:$port/whoami');
-      netLog('client', 'probing $uri');
-      final request = await client.getUrl(uri);
-      final response = await request.close().timeout(const Duration(seconds: 8));
+      if (!quiet) netLog('client', 'probing $uri');
+      final request = await client.getUrl(uri).timeout(timeout);
+      final response = await request.close().timeout(timeout);
       if (response.statusCode != HttpStatus.ok) {
         throw Exception('Device did not respond (${response.statusCode})');
       }
@@ -252,7 +257,7 @@ class TransferClient {
         lastSeen: DateTime.now(),
       );
     } catch (e) {
-      netLog('client', 'probe $address:$port failed: $e');
+      if (!quiet) netLog('client', 'probe $address:$port failed: $e');
       rethrow;
     } finally {
       client.close(force: true);

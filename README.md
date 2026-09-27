@@ -59,7 +59,21 @@ Implemented (Phases 1–4 core logic):
   found it; Settings shows this device's own IP to hand to the other
   side. The transfer server now binds to a fixed port first (falling
   back to an OS-assigned one only on conflict) so a typed IP alone is
-  enough.
+  enough. Manually-added devices persist (`ManualDeviceStore`) and the
+  dialog shows a "Recent" quick-pick list, so a device only needs its IP
+  typed once.
+- **Manual device auto-reconnect** (`AppState._resolveManualDevices`) —
+  a manually-added device's IP can drift (DHCP lease renewal). There's no
+  cross-platform MAC-to-IP lookup available (no generic router API
+  exists, and Android blocks apps from reading the ARP table or doing
+  raw scans, for the same reason it blocks background clipboard reads).
+  Instead this re-checks each manual device not already found by
+  broadcast every 45s: a cheap request to its last-known address first,
+  falling back to sweeping the local /24 (parallel `/whoami` requests,
+  500ms timeout each) for whichever address now answers with the known
+  device id. Also runs once immediately on startup and on app resume.
+  Works identically on every platform since it's just ordinary HTTP
+  requests.
 - **Remote browsing** (`lib/screens/browse_screen.dart`,
   `remote_folder_screen.dart`, `GET /browse`, `GET /fetch`) — a new
   **Browse** tab lets you open a paired, currently-online device's shared

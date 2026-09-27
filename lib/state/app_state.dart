@@ -21,6 +21,7 @@ import '../services/settings_store.dart';
 import '../services/transfer_client.dart' show TransferClient, TransferCanceledException;
 import '../services/transfer_server.dart';
 import '../util/net_log.dart';
+import '../util/network_info.dart';
 import '../util/pairing_code.dart';
 import '../util/save_path.dart';
 
@@ -71,6 +72,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _clipboardTimer;
   String? _lastClipboardText;
   String? clipboardSyncError;
+
+  Timer? _manualDeviceRefreshTimer;
+  bool _resolvingManualDevices = false;
 
   StreamSubscription<List<Device>>? _devicesSub;
   bool _ready = false;
@@ -142,6 +146,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     _restartClipboardSync();
     WidgetsBinding.instance.addObserver(this);
+
+    _resolveManualDevices();
+    _manualDeviceRefreshTimer = Timer.periodic(_manualDeviceRefreshInterval, (_) => _resolveManualDevices());
   }
 
   @override
@@ -151,6 +158,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _discovery?.stop();
     _server?.stop();
     _clipboardTimer?.cancel();
+    _manualDeviceRefreshTimer?.cancel();
     super.dispose();
   }
 
@@ -173,6 +181,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _discovery?.refreshSelf();
       _pollClipboard();
+      _resolveManualDevices();
     }
   }
 
@@ -204,6 +213,102 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       manualAddError = 'Could not reach $address: $e';
     }
     notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------
+  // Manual device auto-reconnect
+  //
+  // A manually-added device's IP can drift (DHCP lease renewal, the
+  // router restarting, etc.) — there's no MAC-address-to-IP lookup
+  // available to us that works across platforms (no generic router API
+  // exists, and Android specifically blocks apps from reading the ARP
+  // table or doing raw network scans, for the same reason it blocks
+  // background clipboard reads: that access is exactly what malware
+  // wants). Instead, this uses our own protocol to get the same result:
+  // sweep the local /24 asking each address "who are you" and see which
+  // one answers with the id we already know. Works identically on every
+  // platform since it's just ordinary HTTP requests, no special
+  // permissions needed.
+  // ---------------------------------------------------------------------
+
+  static const Duration _manualDeviceRefreshInterval = Duration(seconds: 45);
+  static const Duration _manualDeviceQuickCheckTimeout = Duration(seconds: 3);
+  static const Duration _subnetSweepTimeout = Duration(milliseconds: 500);
+
+  /// Re-checks every manually-added device not already found by broadcast
+  /// discovery (no need to fix what isn't broken) — cheap in the common
+  /// case (one quick request per device against its last-known address),
+  /// only falling back to a full subnet sweep when that address stops
+  /// answering as the expected device.
+  Future<void> _resolveManualDevices() async {
+    if (_resolvingManualDevices) return; // previous sweep still running; don't overlap
+    final stale = _manualDevices.values
+        .where((d) => !_discoveredDevices.any((discovered) => discovered.id == d.id))
+        .toList();
+    if (stale.isEmpty) return;
+
+    _resolvingManualDevices = true;
+    try {
+      for (final device in stale) {
+        await _resolveManualDevice(device);
+      }
+    } finally {
+      _resolvingManualDevices = false;
+    }
+  }
+
+  Future<void> _resolveManualDevice(Device knownDevice) async {
+    try {
+      final probed = await _client.probeDevice(
+        address: knownDevice.address,
+        port: knownDevice.port,
+        timeout: _manualDeviceQuickCheckTimeout,
+        quiet: true,
+      );
+      if (probed.id == knownDevice.id) return; // still at the same address, nothing to do
+      // Something else now answers at that address; the real device has
+      // moved. Fall through to find where.
+    } catch (_) {
+      // Unreachable at the last-known address; fall through to a sweep.
+    }
+
+    final found = await _scanSubnetFor(knownDevice.id, excludeAddress: knownDevice.address);
+    if (found == null) return; // not found this round; the periodic timer will try again
+
+    netLog('app', 'manual device ${knownDevice.name} moved ${knownDevice.address} -> ${found.address}');
+    _manualDevices[found.id] = found;
+    await manualDevices.remember(found);
+    notifyListeners();
+  }
+
+  /// Probes every address in this device's own /24 (in parallel, short
+  /// timeout each) for [targetId], skipping [excludeAddress] since that's
+  /// already known to have failed. Returns the matching device, or null
+  /// if nothing on the subnet currently claims that id.
+  Future<Device?> _scanSubnetFor(String targetId, {String? excludeAddress}) async {
+    final myIps = await localIpAddresses();
+    if (myIps.isEmpty) return null;
+    final parts = myIps.first.split('.');
+    if (parts.length != 4) return null;
+    final prefix = '${parts[0]}.${parts[1]}.${parts[2]}';
+
+    final candidates = [for (var i = 1; i <= 254; i++) '$prefix.$i']
+      ..removeWhere((ip) => ip == excludeAddress || ip == myIps.first);
+
+    final results = await Future.wait(
+      candidates.map((ip) async {
+        try {
+          return await _client.probeDevice(address: ip, timeout: _subnetSweepTimeout, quiet: true);
+        } catch (_) {
+          return null;
+        }
+      }),
+    );
+
+    for (final device in results) {
+      if (device != null && device.id == targetId) return device;
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------------
