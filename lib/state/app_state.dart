@@ -915,7 +915,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<String> _defaultDeviceName() async {
     try {
       final host = Platform.localHostname;
-      if (host.isNotEmpty) return host;
+      // Android commonly reports the literal string "localhost" rather
+      // than throwing or returning empty — not a real hostname, so treat
+      // it the same as unavailable rather than showing it to the user.
+      if (host.isNotEmpty && host.toLowerCase() != 'localhost') return host;
     } catch (_) {
       // Not available on some platforms/sandboxes; fall through.
     }

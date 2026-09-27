@@ -195,6 +195,8 @@ class _DeviceTileState extends State<_DeviceTile> {
     final trusted = widget.trusted;
     final colors = context.colors;
 
+    final compactButtonPadding = const EdgeInsets.symmetric(horizontal: 14, vertical: 10);
+
     final tile = AnimatedContainer(
       duration: const Duration(milliseconds: 160),
       decoration: BoxDecoration(
@@ -203,42 +205,62 @@ class _DeviceTileState extends State<_DeviceTile> {
         border: Border.all(color: _dragging ? colors.accentText : colors.line, width: _dragging ? 1.6 : 1),
       ),
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CircleAvatar(
-            radius: 22,
-            backgroundColor: trusted ? colors.accentGlow : colors.surface2,
-            child: Icon(platformIconData(device.platform), color: trusted ? colors.accentText : colors.muted, size: 22),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(device.name, style: Theme.of(context).textTheme.titleSmall, maxLines: 1, overflow: TextOverflow.ellipsis),
-                const SizedBox(height: 2),
-                Text(
-                  _dragging ? 'Drop to send' : device.address,
-                  style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12.5, color: _dragging ? colors.accentText : colors.muted),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          if (trusted) ...[
-            Icon(Icons.link_rounded, size: 15, color: colors.accentText),
-            const SizedBox(width: 6),
-          ],
-          trusted
-              ? FilledButton(onPressed: widget.onSend, child: const Text('Send'))
-              : Row(
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 20,
+                backgroundColor: trusted ? colors.accentGlow : colors.surface2,
+                child: Icon(platformIconData(device.platform), color: trusted ? colors.accentText : colors.muted, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    OutlinedButton(onPressed: widget.onPair, child: const Text('Pair')),
-                    const SizedBox(width: 8),
-                    FilledButton(onPressed: widget.onSend, child: const Text('Send')),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(device.name, style: Theme.of(context).textTheme.titleSmall, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ),
+                        if (trusted) ...[
+                          const SizedBox(width: 6),
+                          Icon(Icons.link_rounded, size: 14, color: colors.accentText),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _dragging ? 'Drop to send' : device.address,
+                      style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12.5, color: _dragging ? colors.accentText : colors.muted),
+                    ),
                   ],
                 ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (!trusted) ...[
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(padding: compactButtonPadding),
+                  onPressed: widget.onPair,
+                  child: const Text('Pair'),
+                ),
+                const SizedBox(width: 8),
+              ],
+              FilledButton(
+                style: FilledButton.styleFrom(padding: compactButtonPadding),
+                onPressed: widget.onSend,
+                child: const Text('Send'),
+              ),
+            ],
+          ),
         ],
       ),
     );
