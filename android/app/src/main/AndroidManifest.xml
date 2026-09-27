@@ -43,6 +43,18 @@
             android:name=".TetherForegroundService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+        <!-- Lets a received file be handed to a viewer app (tapping the
+             "show in folder" action) via a content:// URI instead of a raw
+             file path, which scoped storage blocks outside this app. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

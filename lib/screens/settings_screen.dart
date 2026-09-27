@@ -144,7 +144,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: IconButton(
                   icon: const Icon(Icons.folder_open_rounded, size: 19),
                   tooltip: 'Reveal',
-                  onPressed: () => openFolder(appState.settings.downloadDir),
+                  onPressed: () async {
+                    final ok = await openFolder(appState.settings.downloadDir);
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text("Couldn't open — no app on this device can handle it")),
+                      );
+                    }
+                  },
                 ),
                 onTap: () async {
                   final path = await FilePicker.getDirectoryPath();

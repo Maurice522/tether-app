@@ -9,15 +9,18 @@ import android.os.Process
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class MainActivity : FlutterActivity() {
     companion object {
         private const val TAG = "TetherMainActivity"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val QUIT_CHANNEL = "com.mauricerana.tether/quit"
+        private const val REVEAL_CHANNEL = "com.mauricerana.tether/reveal"
     }
 
     // The Dart side stops discovery/the transfer server first (so peers
@@ -43,6 +46,45 @@ class MainActivity : FlutterActivity() {
             } else {
                 result.notImplemented()
             }
+        }
+
+        // Android has no Finder-style "reveal in folder" — the closest,
+        // most reliably useful equivalent is handing the file to whatever
+        // app the OS considers the right viewer for it (same behavior as
+        // tapping a completed download's notification). A raw file:// path
+        // can't be shared with another app under scoped storage, so this
+        // goes through FileProvider for a content:// URI instead.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, REVEAL_CHANNEL).setMethodCallHandler { call, result ->
+            val path = call.argument<String>("path")
+            if (path == null) {
+                result.error("bad_args", "path required", null)
+                return@setMethodCallHandler
+            }
+            when (call.method) {
+                "openFile" -> result.success(openWithViewer(File(path), asFolder = false))
+                "openFolder" -> result.success(openWithViewer(File(path), asFolder = true))
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun openWithViewer(target: File, asFolder: Boolean): Boolean {
+        return try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", target)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                if (asFolder) {
+                    setDataAndType(uri, "resource/folder")
+                } else {
+                    setDataAndType(uri, contentResolver.getType(uri) ?: "*/*")
+                }
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "failed to open $target (asFolder=$asFolder)", e)
+            false
         }
     }
 
