@@ -9,6 +9,8 @@ import '../state/app_state.dart';
 import '../theme/tether_theme.dart';
 import '../util/network_info.dart';
 import '../util/reveal.dart';
+import '../util/reveal_feedback.dart';
+import 'qr_show_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -130,6 +132,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: TextStyle(color: colors.faint, fontSize: 12),
                 ),
               ),
+              _divider(colors),
+              _Row(
+                title: 'My QR Code',
+                subtitle: 'Let another device scan this to pair',
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const QrShowScreen())),
+              ),
             ],
           ),
           const SizedBox(height: 22),
@@ -144,14 +153,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: IconButton(
                   icon: const Icon(Icons.folder_open_rounded, size: 19),
                   tooltip: 'Reveal',
-                  onPressed: () async {
-                    final ok = await openFolder(appState.settings.downloadDir);
-                    if (!ok && context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text("Couldn't open — no app on this device can handle it")),
-                      );
-                    }
-                  },
+                  onPressed: () => revealWithFeedback(context, () => openFolder(appState.settings.downloadDir)),
                 ),
                 onTap: () async {
                   final path = await FilePicker.getDirectoryPath();

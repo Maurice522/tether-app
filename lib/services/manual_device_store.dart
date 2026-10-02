@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/device.dart';
+import '../util/net_log.dart';
 
 /// Persists devices successfully added via "Add device by IP" so the next
 /// session doesn't need the IP retyped — the whole point of this fallback
@@ -23,8 +24,11 @@ class ManualDeviceStore {
       try {
         final map = jsonDecode(raw) as Map<String, dynamic>;
         store._entries.addAll(map.map((k, v) => MapEntry(k, Map<String, dynamic>.from(v as Map))));
-      } catch (_) {
-        // Corrupt/old data; start fresh.
+      } catch (e) {
+        // Corrupt/old data; start fresh rather than fail to load, but log
+        // it — silently forgetting every manually-added device is
+        // surprising enough that it should leave a diagnostic trace.
+        netLog('manual', 'failed to load manual devices, resetting: $e');
       }
     }
     return store;

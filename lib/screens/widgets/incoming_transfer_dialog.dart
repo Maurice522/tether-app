@@ -27,7 +27,7 @@ class _IncomingTransferDialogState extends State<IncomingTransferDialog> {
     final colors = context.colors;
     final request = widget.request;
     final alreadyTrusted = appState.isSenderTrusted(request.senderId);
-    final totalBytes = request.files.fold<int>(0, (s, f) => s + f.size);
+    final totalBytes = request.totalBytes;
 
     return AlertDialog(
       title: Text('Incoming files from ${request.senderName}'),
@@ -42,21 +42,27 @@ class _IncomingTransferDialogState extends State<IncomingTransferDialog> {
               constraints: const BoxConstraints(maxHeight: 160),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(color: colors.surface2, borderRadius: BorderRadius.circular(12)),
-              child: ListView(
-                shrinkWrap: true,
-                children: request.files
-                    .map((f) => Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          child: Row(
-                            children: [
-                              Icon(Icons.insert_drive_file_outlined, size: 17, color: colors.muted),
-                              const SizedBox(width: 8),
-                              Expanded(child: Text(f.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5))),
-                              Text(formatBytes(f.size), style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12, color: colors.faint)),
-                            ],
-                          ),
-                        ))
-                    .toList(),
+              // A plain Column in a SingleChildScrollView, not a ListView —
+              // AlertDialog's content is measured intrinsically by Material,
+              // and ListView's Sliver-based viewport explicitly doesn't
+              // support intrinsic-dimension queries (it throws), which was
+              // silently taking down the whole dialog's layout with it.
+              child: SingleChildScrollView(
+                child: Column(
+                  children: request.files
+                      .map((f) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            child: Row(
+                              children: [
+                                Icon(Icons.insert_drive_file_outlined, size: 17, color: colors.muted),
+                                const SizedBox(width: 8),
+                                Expanded(child: Text(f.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5))),
+                                Text(formatBytes(f.size), style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12, color: colors.faint)),
+                              ],
+                            ),
+                          ))
+                      .toList(),
+                ),
               ),
             ),
             const SizedBox(height: 8),

@@ -29,6 +29,16 @@ Future<String> defaultDownloadDir() async {
   return path;
 }
 
+/// Paths this process has already handed out via [uniqueSavePath] but
+/// that may not exist on disk yet (the caller opens the file right after,
+/// but hasn't necessarily written to it the instant this returns). Two
+/// incoming transfers racing on the same filename would otherwise both
+/// see "doesn't exist yet" and collide on the same candidate — tracked
+/// for the app's lifetime rather than removed once written, since that's
+/// exactly the same "already spoken for" answer a fresh disk check would
+/// give once the file actually appears.
+final _reservedPaths = <String>{};
+
 /// Returns a path under [dir] for [fileName] that doesn't clobber an
 /// existing file, appending " (1)", " (2)", etc. before the extension.
 Future<String> uniqueSavePath(String dir, String fileName) async {
@@ -36,9 +46,10 @@ Future<String> uniqueSavePath(String dir, String fileName) async {
   final base = p.basenameWithoutExtension(fileName);
   var candidate = p.join(dir, fileName);
   var attempt = 1;
-  while (await File(candidate).exists()) {
+  while (_reservedPaths.contains(candidate) || await File(candidate).exists()) {
     candidate = p.join(dir, '$base ($attempt)$ext');
     attempt++;
   }
+  _reservedPaths.add(candidate);
   return candidate;
 }

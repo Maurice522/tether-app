@@ -27,6 +27,8 @@ class DiscoveryService {
   RawDatagramSocket? _socket;
   Timer? _announceTimer;
   Timer? _cleanupTimer;
+  bool _stopped = false;
+  bool _rebinding = false;
 
   final Map<String, Device> _devices = {};
   final StreamController<List<Device>> _controller = StreamController<List<Device>>.broadcast();
@@ -44,15 +46,44 @@ class DiscoveryService {
     ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
   Future<void> start() async {
-    _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, discoveryPort, reuseAddress: true);
-    _socket!.broadcastEnabled = true;
-    _socket!.listen(_onEvent, onError: (_) {});
+    _stopped = false;
+    await _bind();
     _announceTimer = Timer.periodic(announceInterval, (_) => _announce());
     _cleanupTimer = Timer.periodic(const Duration(seconds: 2), (_) => _cleanupStale());
     _announce();
   }
 
+  Future<void> _bind() async {
+    _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, discoveryPort, reuseAddress: true);
+    _socket!.broadcastEnabled = true;
+    _socket!.listen(_onEvent, onError: (e) {
+      netLog('discovery', 'socket error: $e — attempting to rebind');
+      _rebind();
+    });
+  }
+
+  /// A bound UDP socket can error out from underneath us (Wi-Fi toggled,
+  /// network interface changed) — without this, discovery would silently
+  /// and permanently stop for the rest of the app's lifetime with no way
+  /// to recover short of a full restart.
+  Future<void> _rebind() async {
+    if (_stopped || _rebinding) return;
+    _rebinding = true;
+    try {
+      _socket?.close();
+      _socket = null;
+      await _bind();
+      netLog('discovery', 'rebind succeeded');
+      _announce();
+    } catch (e) {
+      netLog('discovery', 'rebind failed: $e — discovery inactive until the app restarts');
+    } finally {
+      _rebinding = false;
+    }
+  }
+
   Future<void> stop() async {
+    _stopped = true;
     _announceTimer?.cancel();
     _cleanupTimer?.cancel();
     _sendPacket({'v': 1, 'type': 'bye', 'id': selfId});
@@ -61,10 +92,15 @@ class DiscoveryService {
     await _controller.close();
   }
 
-  /// Re-announces immediately, e.g. after the local display name changes.
+  /// Re-announces immediately, e.g. after the local display name changes,
+  /// and asks every other peer within earshot to do the same right now
+  /// instead of waiting for their next periodic tick — otherwise a manual
+  /// refresh can't do anything for *this* device's own list, only make
+  /// others notice this device sooner.
   void refreshSelf({String? name}) {
     if (name != null) selfName = name;
     _announce();
+    _sendPacket({'v': 1, 'type': 'ping', 'id': selfId});
   }
 
   void _onEvent(RawSocketEvent event) {
@@ -105,6 +141,8 @@ class DiscoveryService {
         netLog('discovery', 'bye from $id');
         _emit();
       }
+    } else if (type == 'ping') {
+      _announce();
     }
   }
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/foundation.dart';
@@ -12,10 +13,12 @@ import '../models/device.dart';
 import '../models/pairing_request.dart';
 import '../models/remote_entry.dart';
 import '../models/transfer.dart';
+import '../services/cert_manager.dart';
 import '../services/desktop_window_service.dart';
 import '../services/discovery_service.dart';
 import '../services/history_store.dart';
 import '../services/manual_device_store.dart';
+import '../services/notification_service.dart';
 import '../services/pairing_store.dart';
 import '../services/settings_store.dart';
 import '../services/transfer_client.dart' show TransferClient, TransferCanceledException;
@@ -25,6 +28,7 @@ import '../util/net_log.dart';
 import '../util/network_info.dart';
 import '../util/pairing_code.dart';
 import '../util/save_path.dart';
+import '../util/speed_tracker.dart';
 
 const _uuid = Uuid();
 
@@ -54,6 +58,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// [addManualDevice]). A device discovered normally takes precedence
   /// over a manual entry with the same id, since it's more likely to have
   /// a fresh address/port.
+  /// The port this device's transfer server is actually listening on —
+  /// usually [TransferServer.defaultPort], but can differ if that port was
+  /// already taken (see [TransferServer.start]). Used for the QR pairing
+  /// payload so scanning it works even in that fallback case, unlike
+  /// "Add device by IP" which has to assume the default port.
+  int get serverPort => _server?.port ?? TransferServer.defaultPort;
+
   List<Device> get devices {
     final merged = <String, Device>{..._manualDevices};
     for (final d in _discoveredDevices) {
@@ -75,7 +86,56 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   String? clipboardSyncError;
 
   Timer? _manualDeviceRefreshTimer;
-  bool _resolvingManualDevices = false;
+  Future<void>? _manualDevicesSweep;
+  final Set<String> _finalizedTransferIds = {};
+
+  // ---------------------------------------------------------------------
+  // Transfer resume/retry bookkeeping
+  // ---------------------------------------------------------------------
+
+  /// Pending manual-retry signals for a [TransferStatus.stalled] transfer
+  /// this device actively drives (an outgoing send or a browse download —
+  /// never an incoming push, which has nothing of its own to retry). Its
+  /// presence for a given transfer id is also what [canRetry] reports.
+  final Map<String, Completer<void>> _manualRetryTriggers = {};
+
+  /// Where an incoming file's bytes are being saved, keyed by
+  /// `'<transferId>#<fileIndex>'` — remembered across a stall so a resumed
+  /// upload appends to the same file instead of starting a new one, and so
+  /// [_uploadStatusFor] can report how much of it already arrived.
+  final Map<String, String> _incomingFilePaths = {};
+
+  /// How long an incoming (pushed) transfer waits, once stalled, for the
+  /// sender to resume it before giving up for good. Deliberately longer
+  /// than a sender's own bounded automatic retries (a few seconds) so
+  /// those always get a chance to land — the receiver has no retry action
+  /// of its own, so this is the only thing standing between "briefly
+  /// stalled" and "stuck forever" for a sender that never comes back.
+  static const Duration _incomingResumeTimeout = Duration(seconds: 30);
+  final Map<String, Timer> _incomingStallTimers = {};
+
+  static const List<Duration> _retryBackoffs = [Duration(seconds: 1), Duration(seconds: 3), Duration(seconds: 8)];
+
+  NotificationService? _notifications;
+
+  /// Set by [requestTab] (currently only from a tapped transfer
+  /// notification, jumping to the Activity tab) and consumed once by
+  /// whichever widget owns the actual tab index — see
+  /// [consumeRequestedTab]. Durable rather than a one-shot event stream so
+  /// it isn't lost if the request arrives before that widget exists yet
+  /// (e.g. the app was launched fresh by tapping the notification).
+  int? requestedTab;
+
+  void requestTab(int index) {
+    requestedTab = index;
+    notifyListeners();
+  }
+
+  int? consumeRequestedTab() {
+    final tab = requestedTab;
+    requestedTab = null;
+    return tab;
+  }
 
   StreamSubscription<List<Device>>? _devicesSub;
   bool _ready = false;
@@ -100,10 +160,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _manualDevices[device.id] = device;
     }
 
+    final certManager = await CertManager.load();
+
     final server = TransferServer(
       onIncomingRequest: _onIncomingRequest,
       onIncomingPairRequest: _onIncomingPairRequest,
       onFileSink: _saveIncomingFile,
+      onUploadStatus: _uploadStatusFor,
       isTrusted: (id) => pairing.isTrusted(id),
       onListDir: _listRemoteDir,
       onOpenFile: _openRemoteFile,
@@ -111,6 +174,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       selfId: settings.deviceId,
       selfName: () => settings.deviceName,
       selfPlatform: _platformLabel(),
+      securityContext: certManager.securityContext,
     );
     try {
       await server.start();
@@ -147,6 +211,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     _restartClipboardSync();
     WidgetsBinding.instance.addObserver(this);
+
+    // Not awaited: a slow/blocked permission prompt (macOS/Android) should
+    // never hold up reaching "ready" above.
+    final notifications = NotificationService();
+    _notifications = notifications;
+    notifications.init(onTapped: () => requestTab(2)); // 2 == Activity tab in HomeScreen._screens
 
     _resolveManualDevices();
     _manualDeviceRefreshTimer = Timer.periodic(_manualDeviceRefreshInterval, (_) => _resolveManualDevices());
@@ -205,11 +275,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Re-broadcasts a discovery announce right now instead of waiting for
-  /// the next periodic tick, and prunes any devices already gone stale —
-  /// backs the pull-to-refresh / refresh button on the Nearby screen.
-  void refreshDevices() {
+  /// Asks every peer to re-announce right now instead of waiting for the
+  /// next periodic tick, and rechecks manually-added devices too — backs
+  /// the pull-to-refresh / refresh button on the Nearby and Browse
+  /// screens. Waits briefly for responses to land so the caller's
+  /// loading indicator reflects real work instead of resolving before
+  /// anything could possibly have changed.
+  Future<void> refreshDevices() async {
     _discovery?.refreshSelf();
+    await Future.wait([
+      _resolveManualDevices(),
+      Future.delayed(const Duration(milliseconds: 700)),
+    ]);
   }
 
   void dismissStartupError() {
@@ -226,13 +303,27 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     manualAddError = null;
     notifyListeners();
     try {
-      final device = await _client.probeDevice(address: address);
+      final device = (await _client.probeDevice(address: address)).device;
       _manualDevices[device.id] = device;
       await manualDevices.remember(device);
     } catch (e) {
       manualAddError = 'Could not reach $address: $e';
     }
     notifyListeners();
+  }
+
+  /// The QR-scan equivalent of "Add device by IP" then tapping Pair,
+  /// collapsed into one step since scanning is already the deliberate
+  /// pairing action. Probes [address]:[port], adds whatever answers as a
+  /// device, then immediately starts pairing with it. Rethrows on a probe
+  /// failure (unreachable address, garbage QR content) so the scan screen
+  /// can show it inline the same way [manualAddError] does for manual add.
+  Future<String> pairByAddress(String address, int port) async {
+    final device = (await _client.probeDevice(address: address, port: port)).device;
+    _manualDevices[device.id] = device;
+    await manualDevices.remember(device);
+    notifyListeners();
+    return initiatePairing(device);
   }
 
   // ---------------------------------------------------------------------
@@ -260,31 +351,37 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// case (one quick request per device against its last-known address),
   /// only falling back to a full subnet sweep when that address stops
   /// answering as the expected device.
-  Future<void> _resolveManualDevices() async {
-    if (_resolvingManualDevices) return; // previous sweep still running; don't overlap
+  ///
+  /// If a sweep is already running (periodic timer, app-resume, or a
+  /// concurrent call), returns the SAME in-flight future rather than an
+  /// instant no-op — a caller that explicitly awaits this (like
+  /// [refreshDevices]) needs to actually wait for the real work, not just
+  /// for whichever call happened to arrive first.
+  Future<void> _resolveManualDevices() {
+    return _manualDevicesSweep ??= _doResolveManualDevices().whenComplete(() {
+      _manualDevicesSweep = null;
+    });
+  }
+
+  Future<void> _doResolveManualDevices() async {
     final stale = _manualDevices.values
         .where((d) => !_discoveredDevices.any((discovered) => discovered.id == d.id))
         .toList();
     if (stale.isEmpty) return;
-
-    _resolvingManualDevices = true;
-    try {
-      for (final device in stale) {
-        await _resolveManualDevice(device);
-      }
-    } finally {
-      _resolvingManualDevices = false;
+    for (final device in stale) {
+      await _resolveManualDevice(device);
     }
   }
 
   Future<void> _resolveManualDevice(Device knownDevice) async {
     try {
-      final probed = await _client.probeDevice(
+      final probed = (await _client.probeDevice(
         address: knownDevice.address,
         port: knownDevice.port,
         timeout: _manualDeviceQuickCheckTimeout,
         quiet: true,
-      );
+      ))
+          .device;
       if (probed.id == knownDevice.id) return; // still at the same address, nothing to do
       // Something else now answers at that address; the real device has
       // moved. Fall through to find where.
@@ -321,7 +418,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final results = await Future.wait(
       candidates.map((ip) async {
         try {
-          return await _client.probeDevice(address: ip, timeout: _subnetSweepTimeout, quiet: true);
+          return (await _client.probeDevice(address: ip, timeout: _subnetSweepTimeout, quiet: true)).device;
         } catch (_) {
           return null;
         }
@@ -371,6 +468,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       await pairing.trust(deviceId, name);
     } else {
       await pairing.untrust(deviceId);
+      // Clipboard sync is only meaningful between trusted devices —
+      // leaving it pointed at a device the user just explicitly untrusted
+      // would keep silently pushing clipboard contents to it every poll.
+      if (settings.clipboardSyncDeviceId == deviceId) {
+        await settings.setClipboardSyncEnabled(false);
+        _restartClipboardSync();
+      }
     }
     notifyListeners();
   }
@@ -404,14 +508,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _runOutgoingPairing(Device target, PairingAttempt attempt) async {
     try {
-      final accepted = await _client.sendPairRequest(
+      final result = await _client.sendPairRequest(
         target: target,
         selfId: settings.deviceId,
         selfName: settings.deviceName,
         code: attempt.code,
       );
-      if (accepted) {
+      if (result.accepted) {
         await pairing.trust(target.id, target.name);
+        // Pin the certificate this exchange actually verified — the human
+        // code-compare is what establishes trust; this just gives it
+        // cryptographic teeth for every connection from here on.
+        await pairing.pinFingerprint(target.id, result.certFingerprint);
         attempt.status = PairingStatus.accepted;
       } else {
         attempt.status = PairingStatus.declined;
@@ -431,11 +539,31 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> respondToPairRequest(IncomingPairRequest request, bool accept) async {
     pendingPairRequests.remove(request);
+    if (request.decision.isCompleted) {
+      // Already resolved — either the server's decisionTimeout already
+      // gave up and declined on our behalf, or this is a duplicate
+      // response (e.g. a double-tap before the dialog closed).
+      netLog('app', 'ignoring pair response: already resolved');
+      notifyListeners();
+      return;
+    }
     if (accept) {
       await pairing.trust(request.requesterId, request.requesterName);
     }
     request.decision.complete(accept);
     notifyListeners();
+  }
+
+  /// Pins [fingerprint] for [deviceId] if it's trusted but has no pinned
+  /// fingerprint yet — the case for a device that trusted *us* via an
+  /// incoming pair request rather than initiating pairing itself, which
+  /// never otherwise gets a chance to observe our certificate until it
+  /// makes its own first outgoing connection.
+  Future<void> _pinIfUnpinned(String deviceId, String fingerprint) async {
+    if (fingerprint.isEmpty) return;
+    if (pairing.isTrusted(deviceId) && pairing.expectedFingerprint(deviceId) == null) {
+      await pairing.pinFingerprint(deviceId, fingerprint);
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -489,7 +617,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         transferId: record.id,
         files: fileMetas,
         pairingCode: code,
+        expectedFingerprint: pairing.expectedFingerprint(target.id),
       );
+      // Closes a gap one-way pairing would otherwise leave open: only the
+      // side that *initiated* pairing pins a fingerprint there, so the
+      // other side stayed permanently unpinned until its own first
+      // outgoing connection. Pin it here, opportunistically, the first
+      // time that happens.
+      await _pinIfUnpinned(target.id, result.certFingerprint);
 
       if (canceled) throw const TransferCanceledException();
 
@@ -506,15 +641,38 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       var bytesBeforeCurrentFile = 0;
       for (var i = 0; i < files.length; i++) {
         if (canceled) throw const TransferCanceledException();
-        await _client.uploadFile(
-          target: target,
-          transferId: record.id,
-          fileIndex: i,
-          file: files[i],
+        final fileIndex = i;
+        final baseBytes = bytesBeforeCurrentFile;
+        await _withRetry(
+          record: record,
           isCanceled: () => canceled,
-          onProgress: (sent, total) {
-            record.bytesTransferred = bytesBeforeCurrentFile + sent;
-            notifyListeners();
+          confirmedBytes: () async {
+            try {
+              return await _client.uploadStatus(
+                target: target,
+                transferId: record.id,
+                fileIndex: fileIndex,
+                expectedFingerprint: pairing.expectedFingerprint(target.id),
+              );
+            } catch (_) {
+              return 0;
+            }
+          },
+          attempt: (resumeFrom) {
+            final speed = SpeedTracker(baseBytes + resumeFrom);
+            return _client.uploadFile(
+              target: target,
+              transferId: record.id,
+              fileIndex: fileIndex,
+              file: files[fileIndex],
+              resumeFrom: resumeFrom,
+              isCanceled: () => canceled,
+              expectedFingerprint: pairing.expectedFingerprint(target.id),
+              onProgress: (sent, total) {
+                record.bytesTransferred = baseBytes + sent;
+                if (speed.sample(record.bytesTransferred, record.totalBytes, record)) notifyListeners();
+              },
+            );
           },
         );
         bytesBeforeCurrentFile += fileMetas[i].size;
@@ -554,6 +712,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (accept) {
       await _acceptIncoming(request, trustAfter: trustAfter);
     } else {
+      if (request.decision.isCompleted) {
+        netLog('app', 'ignoring decline for ${request.transferId}: already resolved');
+        return;
+      }
       request.decision.complete(false);
       final record = TransferRecord(
         id: request.transferId,
@@ -568,6 +730,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _acceptIncoming(IncomingTransferRequest request, {required bool trustAfter}) async {
+    if (request.decision.isCompleted) {
+      // Already resolved — either the sender's connection already timed
+      // out server-side (TransferServer.decisionTimeout) or this is a
+      // duplicate accept (e.g. a double-tap before the dialog closed). The
+      // sender has already been told "decline" and stopped listening in
+      // the timeout case, so creating a record here would just produce a
+      // "transferring" transfer that never receives a single byte.
+      netLog('app', 'ignoring accept for ${request.transferId}: already resolved');
+      return;
+    }
     if (trustAfter) {
       await pairing.trust(request.senderId, request.senderName);
     }
@@ -596,15 +768,67 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     IncomingTransferRequest request,
     int fileIndex,
     FileMeta meta,
-    Stream<List<int>> data,
-  ) async {
+    Stream<List<int>> data, {
+    int resumeFrom = 0,
+  }) async {
+    final key = '${request.transferId}#$fileIndex';
+    // A resumed upload arriving is itself the signal that the sender is
+    // still trying — cancel any pending "give up" timer from a prior
+    // attempt's stall.
+    _incomingStallTimers.remove(key)?.cancel();
+
     final record = activeTransfers[request.transferId];
     final bytesBeforeCurrentFile = request.files.sublist(0, fileIndex).fold<int>(0, (s, f) => s + f.size);
-    final savePath = await uniqueSavePath(settings.downloadDir, meta.name);
-    netLog('app', 'saving incoming ${request.transferId} file $fileIndex (${meta.name}, ${meta.size}b) -> $savePath');
-    final sink = File(savePath).openWrite();
 
-    var received = 0;
+    // Registered before any awaited I/O so a cancel arriving before the
+    // stream subscription even exists (e.g. during uniqueSavePath's disk
+    // access below) is captured here instead of silently ignored —
+    // otherwise cancelTransfer finds no handler registered yet, takes its
+    // "already finalized elsewhere" fallback branch, and this download
+    // proceeds to completion anyway after already having been marked
+    // canceled and moved into history.
+    var earlyCancel = false;
+    _cancelHandlers[request.transferId] = () => earlyCancel = true;
+
+    // A resume reuses the exact path a prior attempt already picked for
+    // this file rather than calling uniqueSavePath again, which would
+    // otherwise mint a second "name (1).ext" next to the original partial.
+    final knownPath = _incomingFilePaths[key];
+    final resuming = resumeFrom > 0 && knownPath != null;
+    final String savePath;
+    try {
+      savePath = resuming ? knownPath : await uniqueSavePath(settings.downloadDir, meta.name);
+    } catch (e) {
+      _cancelHandlers.remove(request.transferId);
+      rethrow;
+    }
+    _incomingFilePaths[key] = savePath;
+
+    if (earlyCancel) {
+      _cancelHandlers.remove(request.transferId);
+      _incomingFilePaths.remove(key);
+      // cancelTransfer found this early handler and just flipped the
+      // bool above rather than finalizing anything itself (that's the
+      // whole point — a handler existing means it defers to us) — so we
+      // own finalizing the record as canceled here before unwinding.
+      if (record != null) {
+        record.status = TransferStatus.canceled;
+        await _finishRecord(record);
+      }
+      throw const TransferCanceledException();
+    }
+
+    final effectiveResumeFrom = resuming ? resumeFrom : 0;
+    netLog('app', 'saving incoming ${request.transferId} file $fileIndex (${meta.name}, ${meta.size}b) -> $savePath'
+        '${effectiveResumeFrom > 0 ? ' (resuming from $effectiveResumeFrom)' : ''}');
+    final sink = File(savePath).openWrite(mode: effectiveResumeFrom > 0 ? FileMode.append : FileMode.write);
+    if (record != null) {
+      record.status = TransferStatus.transferring;
+      record.error = null;
+    }
+
+    var received = effectiveResumeFrom;
+    final speed = SpeedTracker(bytesBeforeCurrentFile + effectiveResumeFrom);
     final completer = Completer<void>();
     late final StreamSubscription<List<int>> sub;
     sub = data.timeout(_stallTimeout).listen(
@@ -613,7 +837,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         received += chunk.length;
         if (record != null) {
           record.bytesTransferred = bytesBeforeCurrentFile + received;
-          notifyListeners();
+          if (speed.sample(record.bytesTransferred, record.totalBytes, record)) notifyListeners();
         }
       },
       onDone: () {
@@ -633,8 +857,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       await completer.future;
       await sink.flush();
       await sink.close();
-      netLog('app', 'incoming ${request.transferId} file $fileIndex saved, $received bytes received');
+      netLog('app', 'incoming ${request.transferId} file $fileIndex saved, $received bytes total');
       record?.savedPaths.add(savePath);
+      _incomingFilePaths.remove(key);
 
       if (record != null && fileIndex == request.files.length - 1) {
         record.status = TransferStatus.completed;
@@ -644,11 +869,34 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       netLog('app', 'incoming ${request.transferId} file $fileIndex errored after $received/$bytesBeforeCurrentFile+'
           '${meta.size} bytes: $e');
       await sink.close();
-      if (record != null) {
-        final canceled = e is TransferCanceledException;
-        record.status = canceled ? TransferStatus.canceled : TransferStatus.failed;
-        if (!canceled) record.error = e is TimeoutException ? 'Connection stalled — no data received' : e.toString();
-        await _finishRecord(record);
+      final canceled = e is TransferCanceledException;
+      if (canceled) {
+        _incomingFilePaths.remove(key);
+        if (record != null) {
+          record.status = TransferStatus.canceled;
+          await _finishRecord(record);
+        }
+      } else if (record != null) {
+        // Not finalized: the partial file and the record both stay put so
+        // a resumed upload (the sender's own retry, driven by its
+        // Content-Range) can pick up right where this left off. Give up
+        // for good only if no resume arrives within _incomingResumeTimeout
+        // — there's no receiver-side retry action to wait on indefinitely.
+        record.status = TransferStatus.stalled;
+        record.error = e is TimeoutException ? 'Connection stalled — no data received' : e.toString();
+        record.speedBytesPerSec = null;
+        record.eta = null;
+        notifyListeners();
+        _incomingStallTimers[key] = Timer(_incomingResumeTimeout, () {
+          _incomingStallTimers.remove(key);
+          _incomingFilePaths.remove(key);
+          final r = activeTransfers[request.transferId];
+          if (r != null && r.status == TransferStatus.stalled) {
+            r.status = TransferStatus.failed;
+            r.error = 'The sender never resumed';
+            _finishRecord(r);
+          }
+        });
       }
       rethrow;
     } finally {
@@ -672,12 +920,110 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Whether [transferId] is [TransferStatus.stalled] and waiting on a
+  /// manual [retryTransfer] call rather than mid-backoff on an automatic
+  /// one — what a Retry button in the UI should key off of.
+  bool canRetry(String transferId) => _manualRetryTriggers.containsKey(transferId);
+
+  /// Manually retries a transfer that's given up on its automatic retries.
+  /// A no-op if [transferId] isn't actually waiting for exactly this (e.g.
+  /// it's an incoming push, which has no retry of its own, or it already
+  /// finished).
+  void retryTransfer(String transferId) {
+    _manualRetryTriggers.remove(transferId)?.complete();
+  }
+
+  /// Runs [attempt] with the number of bytes the other end already has (as
+  /// reported by [confirmedBytes], so a resume picks up in the right place
+  /// rather than guessing from local state), retrying transient failures a
+  /// few times with backoff. If those are all exhausted too, surfaces
+  /// [TransferStatus.stalled] and waits indefinitely for a [retryTransfer]
+  /// call (or a cancellation) rather than failing the transfer outright —
+  /// used by both outgoing sends and browse downloads, the two cases where
+  /// this device is the one actively driving the network calls and so the
+  /// only ones a manual retry actually means something for.
+  Future<void> _withRetry({
+    required TransferRecord record,
+    required bool Function() isCanceled,
+    required Future<int> Function() confirmedBytes,
+    required Future<void> Function(int resumeFrom) attempt,
+  }) async {
+    while (true) {
+      for (var i = 0; i <= _retryBackoffs.length; i++) {
+        if (isCanceled()) throw const TransferCanceledException();
+        try {
+          final resumeFrom = await confirmedBytes();
+          record.status = TransferStatus.transferring;
+          record.error = null;
+          notifyListeners();
+          await attempt(resumeFrom);
+          return;
+        } on TransferCanceledException {
+          rethrow;
+        } catch (e) {
+          if (isCanceled()) throw const TransferCanceledException();
+          record.status = TransferStatus.stalled;
+          record.error = 'Connection lost';
+          record.speedBytesPerSec = null;
+          record.eta = null;
+          notifyListeners();
+          if (i == _retryBackoffs.length) break;
+          netLog('app', '${record.id} attempt failed ($e); retrying in ${_retryBackoffs[i].inSeconds}s');
+          await Future.delayed(_retryBackoffs[i]);
+        }
+      }
+      await _waitForManualRetry(record);
+    }
+  }
+
+  Future<void> _waitForManualRetry(TransferRecord record) async {
+    final waiter = Completer<void>();
+    _manualRetryTriggers[record.id] = waiter;
+    final priorCancel = _cancelHandlers[record.id];
+    _cancelHandlers[record.id] = () {
+      priorCancel?.call();
+      _manualRetryTriggers.remove(record.id)?.completeError(const TransferCanceledException());
+    };
+    notifyListeners(); // canRetry(record.id) just flipped to true
+    try {
+      await waiter.future;
+    } finally {
+      _manualRetryTriggers.remove(record.id);
+      if (priorCancel != null) _cancelHandlers[record.id] = priorCancel;
+    }
+  }
+
+  /// How many bytes of an incoming file this device already has on disk —
+  /// answers a sender's pre-resume check. 0 for a file that was never
+  /// started (never stalled, or already completed and forgotten).
+  Future<int> _uploadStatusFor(String transferId, int fileIndex) async {
+    final path = _incomingFilePaths['$transferId#$fileIndex'];
+    if (path == null) return 0;
+    final file = File(path);
+    return await file.exists() ? await file.length() : 0;
+  }
+
   Future<void> _finishRecord(TransferRecord record) async {
+    // Guards against the same record being finalized twice — e.g.
+    // cancelTransfer's fallback path racing with the transfer's own
+    // completion/failure path — which would otherwise insert it into
+    // completedTransfers and persisted history more than once. Set.add
+    // returns false if the id was already present.
+    if (!_finalizedTransferIds.add(record.id)) return;
     record.finishedAt ??= DateTime.now();
+    record.speedBytesPerSec = null;
+    record.eta = null;
     activeTransfers.remove(record.id);
     completedTransfers.insert(0, record);
     await history.append(record);
     notifyListeners();
+
+    // Only the "you got something" case — an incoming push or a browse
+    // download, both recorded with direction == incoming — not outgoing
+    // sends, to avoid spamming a notification per file on a multi-file send.
+    if (record.status == TransferStatus.completed && record.direction == TransferDirection.incoming) {
+      _notifications?.showTransferComplete(record);
+    }
   }
 
   Future<void> clearHistory() async {
@@ -702,7 +1048,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Lists the immediate children of [path] ("" for the root) in a peer's
   /// shared folder.
   Future<List<RemoteEntry>> browseDevice(Device device, String path) {
-    return _client.browse(target: device, requesterId: settings.deviceId, path: path);
+    return _client.browse(
+      target: device,
+      requesterId: settings.deviceId,
+      path: path,
+      expectedFingerprint: pairing.expectedFingerprint(device.id),
+    );
   }
 
   /// Starts downloading [entry] (found at [parentPath] in [device]'s shared
@@ -726,6 +1077,37 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return transferId;
   }
 
+  /// Downloads several [entries] from [device]'s shared folder, up to
+  /// [concurrency] at a time rather than all at once — avoids saturating
+  /// the peer's server or a throttled mobile network stack. Each entry
+  /// still becomes its own independent [TransferRecord]/Activity row,
+  /// exactly as if downloaded one at a time via [startDownload]; there's no
+  /// separate "batch" record type.
+  Future<void> batchDownload(Device device, List<RemoteEntry> entries, String parentPath, {int concurrency = 2}) async {
+    if (entries.isEmpty) return;
+    final queue = List<RemoteEntry>.from(entries);
+
+    Future<void> worker() async {
+      while (queue.isNotEmpty) {
+        final entry = queue.removeAt(0);
+        final transferId = _uuid.v4();
+        final record = TransferRecord(
+          id: transferId,
+          direction: TransferDirection.incoming,
+          peerName: device.name,
+          peerId: device.id,
+          files: [FileMeta(name: entry.name, size: entry.size)],
+          status: TransferStatus.transferring,
+        );
+        activeTransfers[transferId] = record;
+        notifyListeners();
+        await _runBrowseDownload(device, entry, parentPath, record);
+      }
+    }
+
+    await Future.wait(List.generate(concurrency.clamp(1, entries.length), (_) => worker()));
+  }
+
   Future<void> _runBrowseDownload(
     Device device,
     RemoteEntry entry,
@@ -739,15 +1121,28 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       final savePath = await uniqueSavePath(settings.downloadDir, entry.name);
-      await _client.fetchFile(
-        target: device,
-        requesterId: settings.deviceId,
-        remotePath: remotePath,
-        savePath: savePath,
+      await _withRetry(
+        record: record,
         isCanceled: () => canceled,
-        onProgress: (received, total) {
-          record.bytesTransferred = received;
-          notifyListeners();
+        confirmedBytes: () async {
+          final partial = File(savePath);
+          return await partial.exists() ? await partial.length() : 0;
+        },
+        attempt: (resumeFrom) {
+          final speed = SpeedTracker(resumeFrom);
+          return _client.fetchFile(
+            target: device,
+            requesterId: settings.deviceId,
+            remotePath: remotePath,
+            savePath: savePath,
+            resumeFrom: resumeFrom,
+            isCanceled: () => canceled,
+            expectedFingerprint: pairing.expectedFingerprint(device.id),
+            onProgress: (received, total) {
+              record.bytesTransferred = received;
+              if (speed.sample(received, record.totalBytes, record)) notifyListeners();
+            },
+          );
         },
       );
       record.status = TransferStatus.completed;
@@ -779,18 +1174,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<List<RemoteEntry>> _listRemoteDir(String relativePath) async {
     final dirPath = _resolveSharedPath(relativePath);
-    final dir = Directory(dirPath);
-    if (!await dir.exists()) return [];
-    final entries = <RemoteEntry>[];
-    await for (final entity in dir.list(followLinks: false)) {
-      final stat = await entity.stat();
-      entries.add(RemoteEntry(
-        name: p.basename(entity.path),
-        isDir: entity is Directory,
-        size: entity is File ? stat.size : 0,
-        modified: stat.modified,
-      ));
-    }
+    // Synchronous + off the main isolate, not the more natural dir.list()
+    // stream: on macOS, when downloadDir is the default ~/Downloads — reached
+    // from inside the App Sandbox container through its
+    // Data/Downloads -> ~/Downloads symlink — Dart's async directory-listing
+    // implementation (which hands the request to an internal worker thread
+    // and waits on a callback) hangs indefinitely, apparently an interaction
+    // between that worker-thread dispatch and the sandbox's mediation of the
+    // symlinked path. The synchronous syscalls this uses instead don't hit
+    // that path, and running them via Isolate.run keeps a renewed hang (on a
+    // future macOS version, another symlinked folder, etc.) from freezing
+    // the whole app rather than just the one request.
+    final entries = await Isolate.run(() => _listDirSync(dirPath));
     entries.sort((a, b) {
       if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
       return a.name.toLowerCase().compareTo(b.name.toLowerCase());
@@ -847,6 +1242,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _pollClipboard() async {
     final targetId = settings.clipboardSyncDeviceId;
     if (targetId == null) return;
+    if (!pairing.isTrusted(targetId)) {
+      // Defense in depth: sync should never run against an untrusted
+      // device even if clipboardSyncDeviceId is somehow still pointed at
+      // one — setTrusted already clears this on untrust, but this is the
+      // one place that actually pushes clipboard contents over the
+      // network, so it shouldn't have to rely solely on that.
+      await settings.setClipboardSyncEnabled(false);
+      _restartClipboardSync();
+      return;
+    }
     final matches = devices.where((d) => d.id == targetId);
     if (matches.isEmpty) {
       // Sync partner not currently in the discovered-devices list (out of
@@ -872,7 +1277,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     netLog('app', 'clipboard changed locally (${text.length} chars), pushing to ${target.name}');
 
     try {
-      await _client.sendClipboard(target: target, requesterId: settings.deviceId, text: text);
+      await _client.sendClipboard(
+        target: target,
+        requesterId: settings.deviceId,
+        text: text,
+        expectedFingerprint: pairing.expectedFingerprint(target.id),
+      );
       // Only mark as delivered once the push actually succeeds — otherwise
       // a single transient failure (peer briefly unreachable, e.g. right
       // after toggling sync on) would silently mark this text as already
@@ -924,4 +1334,24 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
     return 'My ${_platformLabel()} device';
   }
+}
+
+/// The synchronous half of [AppState._listRemoteDir], run on a background
+/// isolate via [Isolate.run] — see the comment there for why this needs to
+/// be synchronous. Top-level (not a method) because [Isolate.run]'s closure
+/// must not capture an [AppState] instance.
+List<RemoteEntry> _listDirSync(String dirPath) {
+  final dir = Directory(dirPath);
+  if (!dir.existsSync()) return [];
+  final entries = <RemoteEntry>[];
+  for (final entity in dir.listSync(followLinks: false)) {
+    final stat = entity.statSync();
+    entries.add(RemoteEntry(
+      name: p.basename(entity.path),
+      isDir: entity is Directory,
+      size: entity is File ? stat.size : 0,
+      modified: stat.modified,
+    ));
+  }
+  return entries;
 }

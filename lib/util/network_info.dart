@@ -27,7 +27,7 @@ Future<List<String>> localIpAddresses() async {
 /// instead of the real one silently finds nothing.
 bool isPrivateLanAddress(String ip) {
   final parts = ip.split('.').map(int.tryParse).toList();
-  if (parts.length != 4 || parts.any((p) => p == null)) return false;
+  if (parts.length != 4 || parts.any((p) => p == null || p < 0 || p > 255)) return false;
   final a = parts[0]!, b = parts[1]!;
   if (a == 10) return true;
   if (a == 172 && b >= 16 && b <= 31) return true;

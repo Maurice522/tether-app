@@ -8,17 +8,7 @@ import '../../state/app_state.dart';
 import '../../theme/tether_theme.dart';
 import '../../util/format.dart';
 import '../../util/reveal.dart';
-
-/// Runs a reveal/open action and tells the user when it silently couldn't
-/// do anything (mainly an Android reality — there's no app on every device
-/// willing to browse an arbitrary folder) instead of just doing nothing.
-Future<void> _revealWithFeedback(BuildContext context, Future<bool> Function() action) async {
-  final ok = await action();
-  if (ok || !context.mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(content: Text("Couldn't open — no app on this device can handle it")),
-  );
-}
+import '../../util/reveal_feedback.dart';
 
 class TransferTile extends StatelessWidget {
   final TransferRecord record;
@@ -27,9 +17,11 @@ class TransferTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final appState = context.read<AppState>();
     final colors = context.colors;
     final isIncoming = record.direction == TransferDirection.incoming;
-    final isActive = record.status == TransferStatus.pendingApproval || record.status == TransferStatus.transferring;
+    final isStalled = record.status == TransferStatus.stalled;
+    final isActive = record.status == TransferStatus.pendingApproval || record.status == TransferStatus.transferring || isStalled;
     final canReveal = !isActive && isIncoming && record.status == TransferStatus.completed && record.savedPaths.isNotEmpty;
     final title = record.files.length == 1 ? record.files.first.name : '${record.files.length} files';
     final subtitle = isIncoming ? 'From ${record.peerName}' : 'To ${record.peerName}';
@@ -60,7 +52,13 @@ class TransferTile extends StatelessWidget {
                 Text(title, style: Theme.of(context).textTheme.titleSmall, maxLines: 1, overflow: TextOverflow.ellipsis),
                 const SizedBox(height: 3),
                 if (record.status == TransferStatus.transferring) ...[
-                  Text(subtitle, style: TextStyle(color: colors.muted, fontSize: 13)),
+                  Text(
+                    record.speedBytesPerSec == null
+                        ? subtitle
+                        : '${formatBytes(record.speedBytesPerSec!.round())}/s'
+                            '${record.eta == null ? '' : ' · ${formatDuration(record.eta!)} left'}',
+                    style: TextStyle(color: colors.muted, fontSize: 13),
+                  ),
                   const SizedBox(height: 8),
                   ClipRRect(
                     borderRadius: BorderRadius.circular(99),
@@ -82,11 +80,28 @@ class TransferTile extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          isActive
+          isStalled
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (appState.canRetry(record.id))
+                      IconButton(
+                        icon: const Icon(Icons.refresh_rounded, size: 20),
+                        tooltip: 'Retry',
+                        onPressed: () => appState.retryTransfer(record.id),
+                      ),
+                    IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 20),
+                      tooltip: 'Cancel',
+                      onPressed: () => appState.cancelTransfer(record.id),
+                    ),
+                  ],
+                )
+              : isActive
               ? IconButton(
                   icon: const Icon(Icons.close_rounded, size: 20),
                   tooltip: 'Cancel',
-                  onPressed: () => context.read<AppState>().cancelTransfer(record.id),
+                  onPressed: () => appState.cancelTransfer(record.id),
                 )
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
@@ -98,7 +113,7 @@ class TransferTile extends StatelessWidget {
                         tooltip: 'Show in folder',
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                        onPressed: () => _revealWithFeedback(
+                        onPressed: () => revealWithFeedback(
                           context,
                           () => record.savedPaths.length == 1
                               ? revealFile(record.savedPaths.first)
@@ -121,6 +136,8 @@ class TransferTile extends StatelessWidget {
         return colors.danger;
       case TransferStatus.canceled:
         return colors.faint;
+      case TransferStatus.stalled:
+        return colors.away;
       default:
         return colors.accentText;
     }
@@ -132,6 +149,8 @@ class TransferTile extends StatelessWidget {
         return 'Waiting';
       case TransferStatus.transferring:
         return 'Transferring';
+      case TransferStatus.stalled:
+        return 'Stalled';
       case TransferStatus.completed:
         return 'Completed';
       case TransferStatus.declined:

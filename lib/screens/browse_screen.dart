@@ -5,6 +5,7 @@ import '../state/app_state.dart';
 import '../theme/tether_theme.dart';
 import '../util/format.dart';
 import 'remote_folder_screen.dart';
+import 'widgets/refresh_button.dart';
 
 /// Lists paired devices that are currently online, as the entry point for
 /// browsing another device's shared folder.
@@ -21,18 +22,14 @@ class BrowseScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Browse'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh',
-            onPressed: () => appState.refreshDevices(),
-          ),
+          RefreshButton(onRefresh: appState.refreshDevices),
           const SizedBox(width: 4),
         ],
       ),
       body: RefreshIndicator(
         color: colors.accentText,
         backgroundColor: colors.surface,
-        onRefresh: () async => appState.refreshDevices(),
+        onRefresh: () => appState.refreshDevices(),
         child: pairedOnline.isEmpty
             ? const _EmptyBrowseState()
             : ListView.builder(

@@ -16,8 +16,15 @@ typedef FileSink = Future<void> Function(
   IncomingTransferRequest request,
   int fileIndex,
   FileMeta meta,
-  Stream<List<int>> data,
-);
+  Stream<List<int>> data, {
+  int resumeFrom,
+});
+
+/// How many bytes of file [fileIndex] in transfer [transferId] the app
+/// layer already has on disk — asked by a sender before resuming an
+/// interrupted upload, so it knows where to continue from instead of
+/// restarting the whole file.
+typedef UploadStatusCheck = Future<int> Function(String transferId, int fileIndex);
 
 /// Whether [requesterId] is a paired device allowed to browse/fetch this
 /// device's shared folder. Same trust store as offers/pairing — a peer id
@@ -46,12 +53,22 @@ typedef ClipboardSink = void Function(String text);
 ///    `{"decision":"accept"}` or `{"decision":"decline"}`.
 ///  - `POST /upload/<transferId>/<fileIndex>` — raw file bytes for a file
 ///    from a previously accepted offer. Streamed straight to [onFileSink]
-///    so large files never sit fully in memory.
+///    so large files never sit fully in memory. A `Content-Range` request
+///    header (legitimate per RFC 7233, if unusual — most requests carrying
+///    one are PATCHes) means this body is only the tail of the file
+///    starting at the range's first byte, resuming an upload that was
+///    previously interrupted partway through.
+///  - `GET /upload-status/<transferId>/<fileIndex>` — how many bytes of
+///    that file the receiver already has, so a sender can resume an
+///    interrupted upload from the right offset instead of restarting it.
 ///  - `GET /browse?requesterId=<id>&path=<relative>` — lists the shared
 ///    folder's contents for an already-paired peer. No approval prompt:
 ///    pairing is the trust boundary, same as sending files.
 ///  - `GET /fetch?requesterId=<id>&path=<relative>` — streams one file's
-///    bytes from the shared folder back to an already-paired peer.
+///    bytes from the shared folder back to an already-paired peer. Honors
+///    a standard `Range: bytes=<start>-` request header with a `206`
+///    response, so an interrupted download can resume instead of
+///    restarting.
 class TransferServer {
   static const Duration decisionTimeout = Duration(seconds: 60);
 
@@ -66,6 +83,7 @@ class TransferServer {
   final void Function(IncomingTransferRequest request) onIncomingRequest;
   final void Function(IncomingPairRequest request) onIncomingPairRequest;
   final FileSink onFileSink;
+  final UploadStatusCheck onUploadStatus;
   final TrustCheck isTrusted;
   final DirLister onListDir;
   final FileOpener onOpenFile;
@@ -73,6 +91,7 @@ class TransferServer {
   final String selfId;
   final String Function() selfName;
   final String selfPlatform;
+  final SecurityContext securityContext;
 
   HttpServer? _server;
   final Map<String, IncomingTransferRequest> _pending = {};
@@ -82,6 +101,7 @@ class TransferServer {
     required this.onIncomingRequest,
     required this.onIncomingPairRequest,
     required this.onFileSink,
+    required this.onUploadStatus,
     required this.isTrusted,
     required this.onListDir,
     required this.onOpenFile,
@@ -89,16 +109,17 @@ class TransferServer {
     required this.selfId,
     required this.selfName,
     required this.selfPlatform,
+    required this.securityContext,
   });
 
   int get port => _server?.port ?? 0;
 
   Future<void> start() async {
     try {
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, defaultPort);
+      _server = await HttpServer.bindSecure(InternetAddress.anyIPv4, defaultPort, securityContext);
     } catch (e) {
       netLog('server', 'bind to default port $defaultPort failed ($e), falling back to an OS-assigned port');
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+      _server = await HttpServer.bindSecure(InternetAddress.anyIPv4, 0, securityContext);
     }
     netLog('server', 'listening on port ${_server!.port}');
     _server!.listen(_handle, onError: (e) => netLog('server', 'listen error: $e'));
@@ -118,6 +139,8 @@ class TransferServer {
         await _handlePair(request);
       } else if (request.method == 'POST' && request.uri.pathSegments.length == 3 && request.uri.pathSegments[0] == 'upload') {
         await _handleUpload(request);
+      } else if (request.method == 'GET' && request.uri.pathSegments.length == 3 && request.uri.pathSegments[0] == 'upload-status') {
+        await _handleUploadStatus(request);
       } else if (request.method == 'GET' && request.uri.path == '/browse') {
         await _handleBrowse(request);
       } else if (request.method == 'GET' && request.uri.path == '/fetch') {
@@ -160,7 +183,7 @@ class TransferServer {
     );
     _pending[transferId] = incoming;
     netLog('server', 'offer $transferId from ${incoming.senderName} (${incoming.files.length} file(s), '
-        '${incoming.files.fold<int>(0, (s, f) => s + f.size)} bytes) — waiting for local decision');
+        '${incoming.totalBytes} bytes) — waiting for local decision');
     onIncomingRequest(incoming);
 
     bool accepted;
@@ -169,6 +192,13 @@ class TransferServer {
     } catch (e) {
       netLog('server', 'offer $transferId decision timed out/errored: $e');
       accepted = false;
+      // The wait gave up, but the Completer itself is still open — if the
+      // app layer later completes it for real (a very late accept/decline
+      // tap), that call would otherwise succeed with no one listening,
+      // creating a transfer that thinks it's proceeding when this
+      // connection has already been closed. Closing it here lets the app
+      // layer detect and ignore a late response instead.
+      if (!incoming.decision.isCompleted) incoming.decision.complete(false);
     }
     _pending.remove(transferId);
     if (accepted) _accepted[transferId] = incoming;
@@ -198,6 +228,7 @@ class TransferServer {
     } catch (e) {
       netLog('server', 'pair request decision timed out/errored: $e');
       accepted = false;
+      if (!incoming.decision.isCompleted) incoming.decision.complete(false);
     }
     netLog('server', 'pair request decided: ${accepted ? 'accept' : 'decline'}');
 
@@ -219,18 +250,49 @@ class TransferServer {
     }
 
     final meta = incoming.files[fileIndex];
-    netLog('server', 'upload start $transferId file $fileIndex (${meta.name}, ${meta.size} bytes)'
-        ' contentLength=${request.contentLength}');
-    final sw = Stopwatch()..start();
-    await onFileSink(incoming, fileIndex, meta, request);
-    netLog('server', 'upload done $transferId file $fileIndex in ${sw.elapsedMilliseconds}ms');
-
-    request.response.statusCode = HttpStatus.ok;
-    await request.response.close();
-
-    if (fileIndex == incoming.files.length - 1) {
-      _accepted.remove(transferId);
+    var resumeFrom = 0;
+    final contentRange = request.headers.value('content-range');
+    if (contentRange != null) {
+      final match = RegExp(r'bytes (\d+)-').firstMatch(contentRange);
+      if (match != null) resumeFrom = int.parse(match.group(1)!);
     }
+    netLog('server', 'upload start $transferId file $fileIndex (${meta.name}, ${meta.size} bytes)'
+        ' contentLength=${request.contentLength}${resumeFrom > 0 ? ' resumeFrom=$resumeFrom' : ''}');
+    final sw = Stopwatch()..start();
+    try {
+      await onFileSink(incoming, fileIndex, meta, request, resumeFrom: resumeFrom);
+      netLog('server', 'upload done $transferId file $fileIndex in ${sw.elapsedMilliseconds}ms');
+      request.response.statusCode = HttpStatus.ok;
+      // Only the last file's success ends authorization — earlier files
+      // in the same multi-file transfer still have more uploads coming.
+      if (fileIndex == incoming.files.length - 1) {
+        _accepted.remove(transferId);
+      }
+    } catch (e) {
+      // Unlike a success, a failure here does NOT end authorization — a
+      // transient error is exactly what a sender's own retry logic
+      // resumes from, and it reuses this same transferId/fileIndex to do
+      // so. Authorization only ever ends on the last file's success (or
+      // never, if the sender gives up for good) — a leftover entry for an
+      // abandoned transfer is harmless, not a growing liability.
+      netLog('server', 'upload failed $transferId file $fileIndex after ${sw.elapsedMilliseconds}ms: $e');
+      request.response.statusCode = HttpStatus.internalServerError;
+    }
+    await request.response.close();
+  }
+
+  Future<void> _handleUploadStatus(HttpRequest request) async {
+    final transferId = request.uri.pathSegments[1];
+    final fileIndex = int.tryParse(request.uri.pathSegments[2]);
+    if (fileIndex == null || !_accepted.containsKey(transferId)) {
+      request.response.statusCode = HttpStatus.forbidden;
+      await request.response.close();
+      return;
+    }
+    final bytesReceived = await onUploadStatus(transferId, fileIndex);
+    request.response.headers.contentType = ContentType.json;
+    request.response.write(jsonEncode({'bytesReceived': bytesReceived}));
+    await request.response.close();
   }
 
   Future<void> _handleBrowse(HttpRequest request) async {
@@ -277,11 +339,23 @@ class TransferServer {
       return;
     }
     final length = await file.length();
-    netLog('server', 'fetch "$path" -> ${file.path} ($length bytes)');
+    var start = 0;
+    final rangeHeader = request.headers.value('range');
+    if (rangeHeader != null) {
+      final match = RegExp(r'bytes=(\d+)-').firstMatch(rangeHeader);
+      final requested = match == null ? null : int.parse(match.group(1)!);
+      if (requested != null && requested > 0 && requested < length) start = requested;
+    }
+    final partial = start > 0;
+    netLog('server', 'fetch "$path" -> ${file.path} ($length bytes${partial ? ", resuming from $start" : ""})');
     request.response.headers.contentType = ContentType.binary;
-    request.response.contentLength = length;
+    request.response.contentLength = length - start;
+    if (partial) {
+      request.response.statusCode = HttpStatus.partialContent;
+      request.response.headers.set('content-range', 'bytes $start-${length - 1}/$length');
+    }
     try {
-      await request.response.addStream(file.openRead());
+      await request.response.addStream(partial ? file.openRead(start) : file.openRead());
     } catch (e) {
       netLog('server', 'fetch "$path" stream interrupted: $e');
     }

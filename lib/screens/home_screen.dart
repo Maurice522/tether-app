@@ -55,6 +55,17 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     }
 
+    // A tapped transfer notification requests a tab jump (see
+    // AppState.requestTab) — durable until consumed, so this also handles
+    // the app having been launched fresh by that tap.
+    if (appState.requestedTab != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final tab = appState.consumeRequestedTab();
+        if (tab != null) setState(() => _index = tab);
+      });
+    }
+
     return Scaffold(
       body: IndexedStack(index: _index, children: _screens),
       bottomNavigationBar: NavigationBar(

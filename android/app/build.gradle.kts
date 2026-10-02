@@ -8,13 +8,16 @@ android {
     namespace = "com.mauricerana.tether"
     // flutter.compileSdkVersion currently resolves to 34, but
     // flutter_plugin_android_lifecycle (a transitive dependency of
-    // file_picker) requires compileSdk 36+.
-    compileSdk = 36
+    // file_picker) requires compileSdk 36+, and permission_handler_android
+    // (added for QR pairing's camera permission) requires 37+.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Required by flutter_local_notifications.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     defaultConfig {
@@ -49,4 +52,8 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

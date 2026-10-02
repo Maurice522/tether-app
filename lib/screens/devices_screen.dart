@@ -6,42 +6,66 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/device.dart';
+import '../models/pairing_request.dart';
 import '../state/app_state.dart';
 import '../theme/tether_theme.dart';
 import '../util/format.dart';
+import '../util/send_flow.dart';
+import 'qr_scan_screen.dart';
 import 'widgets/add_device_dialog.dart';
-import 'widgets/outgoing_transfer_dialog.dart';
 import 'widgets/pairing_dialog.dart';
+import 'widgets/refresh_button.dart';
 
 /// Desktop platforms support dragging files in from Finder/Explorer;
 /// there's no equivalent "drop a file from outside the app" gesture on
 /// Android, so the drop target there would only ever be inert.
 bool get _supportsFileDrop => Platform.isMacOS || Platform.isWindows || Platform.isLinux;
 
-Future<void> _sendFiles(BuildContext context, Device device, List<File> files) async {
-  if (files.isEmpty || !context.mounted) return;
-  final appState = context.read<AppState>();
-  final transferId = appState.sendFiles(device, files);
+class DevicesScreen extends StatefulWidget {
+  const DevicesScreen({super.key});
 
-  if (!context.mounted) return;
-  showDialog(
-    context: context,
-    builder: (_) => OutgoingTransferDialog(transferId: transferId),
-  );
+  @override
+  State<DevicesScreen> createState() => _DevicesScreenState();
 }
 
-class DevicesScreen extends StatelessWidget {
-  const DevicesScreen({super.key});
+class _DevicesScreenState extends State<DevicesScreen> {
+  // One stable GlobalKey per device, reused across rebuilds — lets the
+  // window-level drop fallback below hit-test a drop's position against
+  // each tile's actual on-screen bounds. desktop_drop's DropTarget doesn't
+  // do tree-based hit-testing (every registered instance independently
+  // checks its own bounds against the raw OS event), so nesting one
+  // DropTarget inside another would fire BOTH for the same drop — this
+  // hit-test is what makes the window-level one act only as a fallback for
+  // drops that didn't land on any tile, instead of double-sending.
+  final Map<String, GlobalKey> _tileKeys = {};
+
+  GlobalKey _keyFor(String deviceId) => _tileKeys.putIfAbsent(deviceId, GlobalKey.new);
+
+  String? _deviceIdAt(Offset globalPosition) {
+    for (final entry in _tileKeys.entries) {
+      final renderObject = entry.value.currentContext?.findRenderObject();
+      if (renderObject is! RenderBox) continue;
+      final local = renderObject.globalToLocal(globalPosition);
+      if (renderObject.paintBounds.contains(local)) return entry.key;
+    }
+    return null;
+  }
 
   Future<void> _pickAndSend(BuildContext context, Device device) async {
     final picked = await FilePicker.pickFiles();
     final files = picked.map((f) => f.path).whereType<String>().map(File.new).toList();
     if (!context.mounted) return;
-    await _sendFiles(context, device, files);
+    await sendFilesToDevice(context, device, files);
   }
 
   void _pair(BuildContext context, Device device) {
     final appState = context.read<AppState>();
+    // Guards against a rapid double-tap firing this twice before the
+    // first dialog's pop animation removes the button — without it, two
+    // concurrent pairing attempts start and two dialogs stack up.
+    final alreadyPairing = appState.pairingAttempts.values
+        .any((a) => a.peerId == device.id && a.status == PairingStatus.waiting);
+    if (alreadyPairing) return;
     final attemptId = appState.initiatePairing(device);
     showDialog(
       context: context,
@@ -54,21 +78,24 @@ class DevicesScreen extends StatelessWidget {
     final appState = context.watch<AppState>();
     final devices = appState.devices;
     final colors = context.colors;
+    _tileKeys.removeWhere((id, _) => !devices.any((d) => d.id == id));
 
-    return Scaffold(
+    final scaffold = Scaffold(
       appBar: AppBar(
         title: const Text('Nearby Devices'),
         actions: [
+          if (Platform.isAndroid)
+            IconButton(
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+              tooltip: 'Scan QR code',
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const QrScanScreen())),
+            ),
           IconButton(
             icon: const Icon(Icons.add_rounded),
             tooltip: 'Add device by IP',
             onPressed: () => showDialog(context: context, builder: (_) => const AddDeviceDialog()),
           ),
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh',
-            onPressed: () => appState.refreshDevices(),
-          ),
+          RefreshButton(onRefresh: appState.refreshDevices),
           const SizedBox(width: 4),
         ],
       ),
@@ -90,7 +117,7 @@ class DevicesScreen extends StatelessWidget {
             child: RefreshIndicator(
               color: colors.accentText,
               backgroundColor: colors.surface,
-              onRefresh: () async => appState.refreshDevices(),
+              onRefresh: () => appState.refreshDevices(),
               child: devices.isEmpty
                   ? const _EmptyState()
                   : ListView.builder(
@@ -100,6 +127,7 @@ class DevicesScreen extends StatelessWidget {
                         final device = devices[index];
                         final trusted = appState.isSenderTrusted(device.id);
                         return Padding(
+                          key: _keyFor(device.id),
                           padding: const EdgeInsets.only(bottom: 10),
                           child: _EntranceFade(
                             index: index,
@@ -117,6 +145,22 @@ class DevicesScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+
+    if (!_supportsFileDrop) return scaffold;
+
+    // Window-level fallback: a drop that lands on a specific tile is
+    // handled entirely by that tile's own DropTarget (below); this one
+    // only acts when the drop didn't land on any tile — window minimized
+    // to nothing but a title bar, or dropped on empty space — since
+    // there's otherwise no way to say which device it was meant for.
+    return DropTarget(
+      onDragDone: (details) {
+        if (_deviceIdAt(details.globalPosition) != null) return;
+        final files = details.files.map((f) => File(f.path)).toList();
+        pickTargetDeviceAndSend(context, files);
+      },
+      child: scaffold,
     );
   }
 }
@@ -273,7 +317,7 @@ class _DeviceTileState extends State<_DeviceTile> {
       onDragDone: (details) {
         setState(() => _dragging = false);
         final files = details.files.map((f) => File(f.path)).toList();
-        _sendFiles(context, device, files);
+        sendFilesToDevice(context, device, files);
       },
       child: tile,
     );

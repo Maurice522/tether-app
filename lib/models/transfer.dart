@@ -5,6 +5,13 @@ enum TransferDirection { incoming, outgoing }
 enum TransferStatus {
   pendingApproval,
   transferring,
+  /// Dead but resumable: a transient network error interrupted the
+  /// transfer. An outgoing send or browse download resumes this
+  /// automatically for a few attempts and, if those also fail, waits for
+  /// a manual retry rather than failing outright. An incoming (pushed)
+  /// transfer has no client-side retry of its own; it just waits to see
+  /// whether the sender resumes before eventually failing.
+  stalled,
   completed,
   declined,
   failed,
@@ -75,6 +82,14 @@ class TransferRecord {
   /// name clash may have renamed it (see uniqueSavePath).
   final List<String> savedPaths;
 
+  /// Live throughput and estimated time remaining, updated a few times a
+  /// second while [status] is [TransferStatus.transferring] and cleared on
+  /// completion/cancel/stall — transient, not persisted (meaningless once
+  /// a transfer isn't actively running), so deliberately excluded from
+  /// [toJson].
+  double? speedBytesPerSec;
+  Duration? eta;
+
   TransferRecord({
     required this.id,
     required this.direction,
@@ -118,7 +133,7 @@ class TransferRecord {
             .map((f) => FileMeta.fromJson(f as Map<String, dynamic>))
             .toList(),
         status: TransferStatus.values.byName(json['status'] as String),
-        bytesTransferred: json['bytesTransferred'] as int,
+        bytesTransferred: json['bytesTransferred'] as int? ?? 0,
         startedAt: DateTime.parse(json['startedAt'] as String),
         finishedAt: json['finishedAt'] == null ? null : DateTime.parse(json['finishedAt'] as String),
         error: json['error'] as String?,

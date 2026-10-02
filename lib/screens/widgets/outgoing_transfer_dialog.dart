@@ -29,7 +29,9 @@ class OutgoingTransferDialog extends StatelessWidget {
       return AlertDialog(content: SizedBox(height: 40, child: Center(child: CircularProgressIndicator(color: colors.accentText))));
     }
 
-    final isTerminal = record.status != TransferStatus.pendingApproval && record.status != TransferStatus.transferring;
+    final isTerminal = record.status != TransferStatus.pendingApproval &&
+        record.status != TransferStatus.transferring &&
+        record.status != TransferStatus.stalled;
 
     return AlertDialog(
       title: Text('Sending to ${record.peerName}'),
@@ -76,6 +78,19 @@ class OutgoingTransferDialog extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               '${formatBytes(record.bytesTransferred)} / ${formatBytes(record.totalBytes)}',
+              style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12.5, color: colors.muted),
+            ),
+          ] else if (record.status == TransferStatus.stalled) ...[
+            Row(
+              children: [
+                Icon(Icons.wifi_off_rounded, size: 18, color: colors.away),
+                const SizedBox(width: 8),
+                const Expanded(child: Text('Connection lost — retrying automatically…')),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${formatBytes(record.bytesTransferred)} / ${formatBytes(record.totalBytes)} sent so far',
               style: TextStyle(fontFamily: 'Geist Mono', fontSize: 12.5, color: colors.muted),
             ),
           ] else
