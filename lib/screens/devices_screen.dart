@@ -84,7 +84,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
       appBar: AppBar(
         title: const Text('Nearby Devices'),
         actions: [
-          if (Platform.isAndroid)
+          if (Platform.isAndroid || Platform.isIOS)
             IconButton(
               icon: const Icon(Icons.qr_code_scanner_rounded),
               tooltip: 'Scan QR code',

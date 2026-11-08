@@ -54,7 +54,16 @@ class DiscoveryService {
   }
 
   Future<void> _bind() async {
-    _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, discoveryPort, reuseAddress: true);
+    // SO_REUSEADDR alone doesn't let two sockets share a UDP port on
+    // Apple platforms — that needs SO_REUSEPORT too (unsupported on
+    // Windows/Android). Matters when two Tether instances share one
+    // network stack, e.g. the iOS simulator running beside the Mac app.
+    _socket = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      discoveryPort,
+      reuseAddress: true,
+      reusePort: Platform.isMacOS || Platform.isIOS || Platform.isLinux,
+    );
     _socket!.broadcastEnabled = true;
     _socket!.listen(_onEvent, onError: (e) {
       netLog('discovery', 'socket error: $e — attempting to rebind');

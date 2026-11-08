@@ -35,6 +35,7 @@ class NotificationService {
   Future<void> init({required void Function() onTapped}) async {
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(),
       macOS: DarwinInitializationSettings(),
       windows: WindowsInitializationSettings(
         appName: 'Tether',
@@ -64,6 +65,7 @@ class NotificationService {
         body: body,
         notificationDetails: const NotificationDetails(
           android: AndroidNotificationDetails(_channelId, _channelName, importance: Importance.defaultImportance),
+          iOS: DarwinNotificationDetails(),
           macOS: DarwinNotificationDetails(),
           windows: WindowsNotificationDetails(),
         ),
