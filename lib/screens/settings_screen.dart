@@ -160,6 +160,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   if (path != null) await appState.updateDownloadDir(path);
                 },
               ),
+              if (Platform.isAndroid && !appState.androidAllFilesGranted) ...[
+                _divider(colors),
+                _Row(
+                  title: "Use the phone's Downloads folder",
+                  subtitle: 'Needs "All files access", so received files appear in Files and paired devices can browse them.',
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    final granted = await appState.useDeviceDownloads();
+                    if (!granted) {
+                      messenger.showSnackBar(const SnackBar(content: Text('Not granted — still using the app folder.')));
+                    }
+                  },
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 22),

@@ -73,6 +73,7 @@ void main() {
       onListDir: (path) async => [],
       onOpenFile: (relativePath) => File(p.join(tempDir.path, 'shared', relativePath)),
       onClipboard: (_) {},
+      onUnpairHint: (_) {},
       selfId: 'receiver-id',
       selfName: () => 'Receiver',
       selfPlatform: 'test',

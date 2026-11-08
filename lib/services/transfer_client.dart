@@ -12,7 +12,11 @@ import 'transfer_server.dart' show TransferServer;
 class TransferOfferResult {
   final bool accepted;
   final String certFingerprint;
-  const TransferOfferResult({required this.accepted, required this.certFingerprint});
+
+  /// Whether the receiver reports it now trusts us — see the `trusted`
+  /// field of the server's `/offer` response.
+  final bool peerTrustsUs;
+  const TransferOfferResult({required this.accepted, required this.certFingerprint, this.peerTrustsUs = false});
 }
 
 /// A [Device] plus the TLS certificate fingerprint it presented during the
@@ -49,7 +53,12 @@ class TransferCanceledException implements Exception {
 /// [PairingStore.expectedFingerprint] so a wrong certificate is rejected
 /// outright rather than silently accepted.
 class TransferClient {
-  static const Duration offerTimeout = Duration(seconds: 65);
+  /// How long to wait on a request the other user has to answer —
+  /// deliberately a little longer than [TransferServer.decisionTimeout], so
+  /// the server's own timeout (a clean "decline") normally wins the race.
+  final Duration offerTimeout;
+
+  TransferClient({this.offerTimeout = const Duration(seconds: 65)});
 
   /// Builds an [HttpClient] whose certificate check pins against
   /// [expectedFingerprint] (rejecting anything else) or accepts whatever
@@ -100,7 +109,11 @@ class TransferClient {
       final body = await utf8.decoder.bind(response).join();
       final json = jsonDecode(body) as Map<String, dynamic>;
       netLog('client', 'offer $transferId response: $body');
-      return TransferOfferResult(accepted: json['decision'] == 'accept', certFingerprint: seenFingerprint ?? '');
+      return TransferOfferResult(
+        accepted: json['decision'] == 'accept',
+        certFingerprint: seenFingerprint ?? '',
+        peerTrustsUs: json['trusted'] == true,
+      );
     } catch (e) {
       netLog('client', 'offer $transferId to $uri failed: $e');
       rethrow;
@@ -109,23 +122,123 @@ class TransferClient {
     }
   }
 
+  /// Sends a pairing request and waits for the other user's decision.
+  ///
+  /// That wait is one long-held connection, and the other side commits its
+  /// half of the pairing the moment its user taps Accept — before this
+  /// side hears anything. If the connection dies in between (Wi-Fi blip,
+  /// phone screen off, app backgrounded), the other device would be left
+  /// trusting us while we know nothing: a pairing on one side only. So a
+  /// failed wait isn't treated as a failed pairing; [pairId] lets us ask
+  /// the peer what was actually decided and keep asking until it says.
   Future<PairResult> sendPairRequest({
     required Device target,
     required String selfId,
     required String selfName,
     required String code,
+    required String pairId,
   }) async {
     String? seenFingerprint;
+    // Recovery may keep asking a little past the request's own timeout:
+    // the peer's user could still be mid-decision when that gives out.
+    final deadline = DateTime.now().add(offerTimeout + const Duration(seconds: 5));
     final client = _clientFor(onFingerprint: (fp) => seenFingerprint = fp);
     try {
       final uri = Uri.parse('https://${target.address}:${target.port}/pair');
       final request = await client.postUrl(uri);
       request.headers.contentType = ContentType.json;
-      request.write(jsonEncode({'id': selfId, 'name': selfName, 'code': code}));
+      request.write(jsonEncode({'id': selfId, 'name': selfName, 'code': code, 'pairId': pairId}));
       final response = await request.close().timeout(offerTimeout);
       final body = await utf8.decoder.bind(response).join();
       final json = jsonDecode(body) as Map<String, dynamic>;
       return PairResult(accepted: json['decision'] == 'accept', certFingerprint: seenFingerprint ?? '');
+    } catch (e) {
+      // Never reached the peer's TLS endpoint at all: nothing to recover.
+      final fingerprint = seenFingerprint;
+      if (fingerprint == null) rethrow;
+      netLog('client', 'pair request to ${target.name} interrupted ($e), asking for the outcome');
+      final accepted = await _pollPairOutcome(target, pairId, fingerprint, deadline);
+      if (accepted == null) rethrow;
+      return PairResult(accepted: accepted, certFingerprint: fingerprint);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Polls the peer's `/pair-status` until it reports a decision (true =
+  /// accepted) or [deadline] passes / the peer says it never heard of the
+  /// request (null). Pinned to [fingerprint], the certificate the original
+  /// request already saw, so an impostor can't answer in the peer's place.
+  Future<bool?> _pollPairOutcome(Device target, String pairId, String fingerprint, DateTime deadline) async {
+    final uri = Uri.parse('https://${target.address}:${target.port}/pair-status?pairId=${Uri.encodeQueryComponent(pairId)}');
+    while (DateTime.now().isBefore(deadline)) {
+      final client = _clientFor(expectedFingerprint: fingerprint, connectionTimeout: const Duration(seconds: 5));
+      try {
+        final request = await client.getUrl(uri).timeout(const Duration(seconds: 5));
+        final response = await request.close().timeout(const Duration(seconds: 5));
+        // An older peer without this endpoint will never have an answer.
+        if (response.statusCode == HttpStatus.notFound) return null;
+        final json = jsonDecode(await utf8.decoder.bind(response).join()) as Map<String, dynamic>;
+        switch (json['status']) {
+          case 'accepted':
+            return true;
+          case 'declined':
+            return false;
+          case 'unknown':
+            return null;
+        }
+      } catch (_) {
+        // Network still flapping; try again until the deadline.
+      } finally {
+        client.close(force: true);
+      }
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
+    return null;
+  }
+
+  /// Asks [target] whether it currently trusts [selfId]. Null when that
+  /// can't be established (unreachable, wrong certificate, malformed
+  /// reply) — callers must treat null as "no information", never as "no".
+  Future<bool?> checkTrust({
+    required Device target,
+    required String selfId,
+    required String expectedFingerprint,
+  }) async {
+    final client = _clientFor(expectedFingerprint: expectedFingerprint, connectionTimeout: const Duration(seconds: 5));
+    try {
+      final uri = Uri.parse('https://${target.address}:${target.port}/trust-check?id=${Uri.encodeQueryComponent(selfId)}');
+      final request = await client.getUrl(uri).timeout(const Duration(seconds: 5));
+      final response = await request.close().timeout(const Duration(seconds: 5));
+      if (response.statusCode != HttpStatus.ok) return null;
+      final json = jsonDecode(await utf8.decoder.bind(response).join()) as Map<String, dynamic>;
+      final trusted = json['trusted'];
+      return trusted is bool ? trusted : null;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Best-effort hint to [target] that this device just unpaired it, so
+  /// it re-checks right away. Failure is fine: the peer's periodic
+  /// reconciliation reaches the same conclusion on its own.
+  Future<void> sendUnpairHint({
+    required Device target,
+    required String selfId,
+    String? expectedFingerprint,
+  }) async {
+    final client = _clientFor(expectedFingerprint: expectedFingerprint, connectionTimeout: const Duration(seconds: 5));
+    try {
+      final uri = Uri.parse('https://${target.address}:${target.port}/unpair');
+      final request = await client.postUrl(uri).timeout(const Duration(seconds: 5));
+      request.headers.contentType = ContentType.json;
+      request.write(jsonEncode({'id': selfId}));
+      final response = await request.close().timeout(const Duration(seconds: 5));
+      await response.drain<void>();
+    } catch (e) {
+      netLog('client', 'unpair hint to ${target.name} failed (non-fatal): $e');
     } finally {
       client.close(force: true);
     }

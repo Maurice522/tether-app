@@ -1,0 +1,42 @@
+name: Windows installer
+
+# Run it by hand from the Actions tab (workflow_dispatch), or push a v* tag.
+# The finished Tether-Setup.exe is attached to the run as an artifact.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: flutter build windows --release
+
+      # Ship the Visual C++ runtime next to the exe so the app starts on a
+      # PC that has never installed the VC++ redistributable.
+      - name: Bundle VC++ runtime
+        shell: pwsh
+        run: |
+          foreach ($dll in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            Copy-Item "C:\Windows\System32\$dll" build\windows\x64\runner\Release\
+          }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" windows\installer\tether.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tether-Setup
+          path: windows/installer/Output/Tether-Setup.exe

@@ -46,3 +46,7 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+/dist/
+/dist-qr.png
+/dist-qr-ios.png
+/windows/installer/Output/

@@ -2,26 +2,51 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+/// The phone's public Downloads folder. Reading/listing it (as Browse
+/// needs, and as sharing it with paired devices means) takes Android's
+/// "All files access", since scoped storage hides everything in it that
+/// this app didn't create itself.
+const androidPublicDownloadsDir = '/storage/emulated/0/Download';
+
+/// Whether [path] is inside an app-private Android directory (the
+/// fallback used when "All files access" isn't granted).
+bool isAppPrivateAndroidPath(String path) => path.contains('/Android/data/');
+
+Future<bool> androidHasAllFilesAccess() async => Platform.isAndroid && await Permission.manageExternalStorage.isGranted;
+
+/// Sends the user to Android's "All files access" screen for this app and
+/// resolves once they're back, with whether it ended up granted.
+Future<bool> androidRequestAllFilesAccess() async =>
+    Platform.isAndroid && (await Permission.manageExternalStorage.request()).isGranted;
+
+/// The app-owned external folder — always usable with no permission.
+Future<String?> androidPrivateDownloadDir() async {
+  final dirs = await getExternalStorageDirectories();
+  if (dirs == null || dirs.isEmpty) return null;
+  final path = p.join(dirs.first.path, 'Tether');
+  await Directory(path).create(recursive: true);
+  return path;
+}
 
 /// Picks a sensible default "downloads" folder per platform.
 ///
-/// Desktop platforms have a real Downloads directory. Android has no
-/// stable equivalent reachable without extra storage permissions, so we
-/// use an app-owned folder under external storage instead; it's still
-/// easy for the user to find via a file manager and needs no runtime
-/// permission grant on modern Android.
+/// Desktop platforms have a real Downloads directory. On Android that's
+/// the public Downloads folder when "All files access" has been granted,
+/// otherwise an app-owned folder under external storage (reachable with
+/// no permission, though invisible to other apps).
 Future<String> defaultDownloadDir() async {
   if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
     final dir = await getDownloadsDirectory();
     if (dir != null) return dir.path;
   }
   if (Platform.isAndroid) {
-    final dirs = await getExternalStorageDirectories();
-    if (dirs != null && dirs.isNotEmpty) {
-      final path = p.join(dirs.first.path, 'Tether');
-      await Directory(path).create(recursive: true);
-      return path;
+    if (await androidHasAllFilesAccess() && await Directory(androidPublicDownloadsDir).exists()) {
+      return androidPublicDownloadsDir;
     }
+    final private = await androidPrivateDownloadDir();
+    if (private != null) return private;
   }
   final fallback = await getApplicationDocumentsDirectory();
   final path = p.join(fallback.path, 'Tether');

@@ -43,6 +43,11 @@ typedef FileOpener = File Function(String relativePath);
 /// Called when a paired device pushes its clipboard text to this one.
 typedef ClipboardSink = void Function(String text);
 
+/// Called when a peer says it unpaired [peerId]. Purely a hint to go
+/// re-verify that peer's side — never itself grounds to drop trust, since
+/// the claim comes over an unauthenticated channel.
+typedef UnpairHint = void Function(String peerId);
+
 /// Runs the local HTTP endpoint peers POST offers and file bytes to.
 ///
 /// Protocol:
@@ -69,8 +74,24 @@ typedef ClipboardSink = void Function(String text);
 ///    a standard `Range: bytes=<start>-` request header with a `206`
 ///    response, so an interrupted download can resume instead of
 ///    restarting.
+///  - `POST /pair` — a pairing request; holds the connection open for the
+///    local decision like `/offer`. The body's `pairId` lets the requester
+///    recover the outcome via `GET /pair-status?pairId=<id>` if that
+///    connection drops after the user has already decided, instead of
+///    being left unpaired on one side only. Outcomes are kept for
+///    [pairResultRetention].
+///  - `GET /trust-check?id=<id>` — `{"trusted":bool}`: whether this
+///    device currently trusts [id]. Lets a peer notice it was unpaired
+///    while it was offline and drop its own half of the pairing.
+///  - `POST /unpair` — `{"id":<id>}` hint that [id] unpaired this device,
+///    prompting an immediate trust re-check rather than waiting for the
+///    next periodic one.
 class TransferServer {
   static const Duration decisionTimeout = Duration(seconds: 60);
+
+  /// How long a pairing decision stays queryable via `/pair-status` —
+  /// comfortably longer than [decisionTimeout] plus a requester's polling.
+  static const Duration pairResultRetention = Duration(minutes: 10);
 
   /// Fixed port the server tries first, so a device can be added manually
   /// by IP alone (no need to also know/type a port) — useful when
@@ -88,6 +109,7 @@ class TransferServer {
   final DirLister onListDir;
   final FileOpener onOpenFile;
   final ClipboardSink onClipboard;
+  final UnpairHint onUnpairHint;
   final String selfId;
   final String Function() selfName;
   final String selfPlatform;
@@ -96,6 +118,8 @@ class TransferServer {
   HttpServer? _server;
   final Map<String, IncomingTransferRequest> _pending = {};
   final Map<String, IncomingTransferRequest> _accepted = {};
+  // pairId -> outcome ('pending' | 'accepted' | 'declined'), see /pair-status.
+  final Map<String, ({String status, DateTime at})> _pairResults = {};
 
   TransferServer({
     required this.onIncomingRequest,
@@ -106,6 +130,7 @@ class TransferServer {
     required this.onListDir,
     required this.onOpenFile,
     required this.onClipboard,
+    required this.onUnpairHint,
     required this.selfId,
     required this.selfName,
     required this.selfPlatform,
@@ -147,6 +172,12 @@ class TransferServer {
         await _handleFetch(request);
       } else if (request.method == 'POST' && request.uri.path == '/clipboard') {
         await _handleClipboard(request);
+      } else if (request.method == 'GET' && request.uri.path == '/pair-status') {
+        await _handlePairStatus(request);
+      } else if (request.method == 'GET' && request.uri.path == '/trust-check') {
+        await _handleTrustCheck(request);
+      } else if (request.method == 'POST' && request.uri.path == '/unpair') {
+        await _handleUnpair(request);
       } else if (request.method == 'GET' && request.uri.path == '/whoami') {
         await _handleWhoami(request);
       } else {
@@ -205,7 +236,14 @@ class TransferServer {
     netLog('server', 'offer $transferId decided: ${accepted ? 'accept' : 'decline'}');
 
     request.response.headers.contentType = ContentType.json;
-    request.response.write(jsonEncode({'decision': accepted ? 'accept' : 'decline'}));
+    // Whether we now trust the sender — true for an already-paired sender
+    // or one the user just chose "trust" for on the accept dialog. Tells
+    // a sender that showed a pairing code to trust us back, so that
+    // choice doesn't leave a pairing that exists on only one side.
+    request.response.write(jsonEncode({
+      'decision': accepted ? 'accept' : 'decline',
+      'trusted': accepted && isTrusted(incoming.senderId),
+    }));
     await request.response.close();
   }
 
@@ -219,7 +257,12 @@ class TransferServer {
       requesterAddress: request.connectionInfo?.remoteAddress.address ?? 'unknown',
       code: json['code'] as String,
     );
+    final pairId = json['pairId'] as String?;
     netLog('server', 'pair request from ${incoming.requesterName} (${incoming.requesterAddress})');
+    if (pairId != null) {
+      _prunePairResults();
+      _pairResults[pairId] = (status: 'pending', at: DateTime.now());
+    }
     onIncomingPairRequest(incoming);
 
     bool accepted;
@@ -231,9 +274,43 @@ class TransferServer {
       if (!incoming.decision.isCompleted) incoming.decision.complete(false);
     }
     netLog('server', 'pair request decided: ${accepted ? 'accept' : 'decline'}');
+    // Recorded before replying, so a requester whose connection dies right
+    // here can still learn the outcome via /pair-status.
+    if (pairId != null) {
+      _pairResults[pairId] = (status: accepted ? 'accepted' : 'declined', at: DateTime.now());
+    }
 
     request.response.headers.contentType = ContentType.json;
     request.response.write(jsonEncode({'decision': accepted ? 'accept' : 'decline'}));
+    await request.response.close();
+  }
+
+  void _prunePairResults() {
+    final cutoff = DateTime.now().subtract(pairResultRetention);
+    _pairResults.removeWhere((_, r) => r.at.isBefore(cutoff));
+  }
+
+  Future<void> _handlePairStatus(HttpRequest request) async {
+    _prunePairResults();
+    final result = _pairResults[request.uri.queryParameters['pairId'] ?? ''];
+    request.response.headers.contentType = ContentType.json;
+    request.response.write(jsonEncode({'status': result?.status ?? 'unknown'}));
+    await request.response.close();
+  }
+
+  Future<void> _handleTrustCheck(HttpRequest request) async {
+    final id = request.uri.queryParameters['id'] ?? '';
+    request.response.headers.contentType = ContentType.json;
+    request.response.write(jsonEncode({'trusted': isTrusted(id)}));
+    await request.response.close();
+  }
+
+  Future<void> _handleUnpair(HttpRequest request) async {
+    final body = await utf8.decoder.bind(request).join();
+    final json = jsonDecode(body) as Map<String, dynamic>;
+    final id = json['id'] as String?;
+    if (id != null) onUnpairHint(id);
+    request.response.statusCode = HttpStatus.noContent;
     await request.response.close();
   }
 

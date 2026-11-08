@@ -1,12 +1,17 @@
 package com.mauricerana.tether
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Process
+import android.provider.MediaStore
 import android.util.Log
+import android.webkit.MimeTypeMap
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -63,8 +68,56 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "openFile" -> result.success(openWithViewer(File(path), asFolder = false))
                 "openFolder" -> result.success(openWithViewer(File(path), asFolder = true))
+                "publishToDownloads" -> {
+                    val fileName = call.argument<String>("fileName")
+                    if (fileName == null) {
+                        result.error("bad_args", "fileName required", null)
+                        return@setMethodCallHandler
+                    }
+                    result.success(publishToDownloads(File(path), fileName))
+                }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    // Transfers are actually saved under the app's own external-files tree
+    // (see defaultDownloadDir() on the Dart side) — invisible from the
+    // Files app and other apps' pickers on modern Android, and the only
+    // storage location reachable without a MANAGE_EXTERNAL_STORAGE grant
+    // the user has to approve by hand. This publishes a copy of [source]
+    // into the public MediaStore Downloads collection too, purely so a
+    // completed transfer shows up where a user would actually look for
+    // it — the app's own folder stays the source of truth Browse/resume
+    // read from, this is additive and best-effort, never load-bearing.
+    private fun publishToDownloads(source: File, displayName: String): Boolean {
+        return try {
+            val extension = displayName.substringAfterLast('.', "").lowercase()
+            val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+                ?: "application/octet-stream"
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, displayName)
+                put(MediaStore.Downloads.MIME_TYPE, mimeType)
+                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Tether")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val resolver = contentResolver
+            val itemUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
+            val wrote = resolver.openOutputStream(itemUri)?.use { out ->
+                source.inputStream().use { input -> input.copyTo(out) }
+                true
+            } ?: false
+            if (!wrote) {
+                resolver.delete(itemUri, null, null)
+                return false
+            }
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(itemUri, values, null, null)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "failed to publish $displayName to Downloads", e)
+            false
         }
     }
 
@@ -88,12 +141,22 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // Best-effort only: neither the permission prompt nor starting the
-    // foreground service should ever be able to take the whole app down.
-    // Without the service the app still runs fine in the foreground; it
-    // just loses the background-survival guarantee, which is a much
-    // better failure mode than not launching at all.
+    // receive_sharing_intent (the share-sheet plugin — see
+    // lib/main.dart's _initShareIntent) reads whatever Intent this
+    // Activity currently holds, both here at cold start and via
+    // onNewIntent below for a warm one, and has no defense of its own
+    // against a SEND intent whose stream URI it can't actually read: that
+    // throws an uncaught SecurityException deep in its native code,
+    // before Dart ever gets a chance to see it, crashing the app —
+    // confirmed live (a share whose grant hadn't propagated cleanly hit
+    // this exact path). Worse, a crashed Activity's launch intent is often
+    // replayed on the next start, turning one bad share into a crash loop
+    // only a full data wipe would clear. Sanitizing the intent here before
+    // the Flutter engine (and so the plugin) ever sees it closes both: a
+    // share that can't actually be read is silently dropped instead of
+    // taking the whole app down with it.
     override fun onCreate(savedInstanceState: Bundle?) {
+        dropUnreadableShareIntent()
         super.onCreate(savedInstanceState)
 
         try {
@@ -115,6 +178,46 @@ class MainActivity : FlutterActivity() {
             ContextCompat.startForegroundService(this, Intent(this, TetherForegroundService::class.java))
         } catch (e: Exception) {
             Log.e(TAG, "failed to start foreground service", e)
+        }
+    }
+
+    // The warm-start counterpart to onCreate's check above — a share
+    // arriving while the app is already running comes through here
+    // instead, and would otherwise reach the same crashing plugin code.
+    override fun onNewIntent(intent: Intent) {
+        setIntent(intent)
+        dropUnreadableShareIntent()
+        super.onNewIntent(getIntent())
+    }
+
+    // If the current intent is a SEND/SEND_MULTIPLE whose stream URI(s)
+    // can't actually be opened, replaces it with an inert one so neither
+    // this nor a future cold start hands it to the share-intent plugin.
+    private fun dropUnreadableShareIntent() {
+        val current = intent ?: return
+        if (current.action != Intent.ACTION_SEND && current.action != Intent.ACTION_SEND_MULTIPLE) return
+
+        val uris = mutableListOf<Uri>()
+        if (current.action == Intent.ACTION_SEND) {
+            current.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let { uris.add(it) }
+        } else {
+            current.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let { uris.addAll(it) }
+        }
+        if (uris.isEmpty()) return
+
+        val unreadable = uris.filterNot { isReadable(it) }
+        if (unreadable.isEmpty()) return
+
+        Log.w(TAG, "dropping share intent — can't read: $unreadable")
+        setIntent(Intent(Intent.ACTION_MAIN))
+    }
+
+    private fun isReadable(uri: Uri): Boolean {
+        return try {
+            contentResolver.openInputStream(uri)?.use { }
+            true
+        } catch (e: Exception) {
+            false
         }
     }
 }

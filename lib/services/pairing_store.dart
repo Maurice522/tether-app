@@ -10,16 +10,30 @@ import '../util/net_log.dart';
 /// between trusting a device and its first successful connection —
 /// treated as "pin on next connect" (trust-on-first-use) rather than
 /// forcing every existing pair to redo pairing after this upgrade.
+///
+/// [pairedAt] is when trust was last granted (null for entries saved
+/// before it existed, which are simply treated as long-established). Trust
+/// reconciliation uses it as a grace period: the two sides of a pairing
+/// never commit at exactly the same instant, so a peer that looks
+/// momentarily unaware of a brand-new pairing isn't evidence of removal.
 class TrustedDevice {
   final String name;
   final String? certFingerprint;
+  final DateTime? pairedAt;
 
-  const TrustedDevice({required this.name, this.certFingerprint});
+  const TrustedDevice({required this.name, this.certFingerprint, this.pairedAt});
 
-  Map<String, dynamic> toJson() => {'name': name, 'certFingerprint': certFingerprint};
+  Map<String, dynamic> toJson() =>
+      {'name': name, 'certFingerprint': certFingerprint, 'pairedAt': pairedAt?.millisecondsSinceEpoch};
 
-  factory TrustedDevice.fromJson(Map<String, dynamic> json) =>
-      TrustedDevice(name: json['name'] as String, certFingerprint: json['certFingerprint'] as String?);
+  factory TrustedDevice.fromJson(Map<String, dynamic> json) {
+    final at = json['pairedAt'] as int?;
+    return TrustedDevice(
+      name: json['name'] as String,
+      certFingerprint: json['certFingerprint'] as String?,
+      pairedAt: at == null ? null : DateTime.fromMillisecondsSinceEpoch(at),
+    );
+  }
 }
 
 /// Persists which peer device ids the user has explicitly paired with.
@@ -83,10 +97,20 @@ class PairingStore {
   /// certificate is accepted and pinned, whatever it is).
   String? expectedFingerprint(String deviceId) => _trusted[deviceId]?.certFingerprint;
 
+  /// When [deviceId] was last (re-)trusted, or null if it isn't trusted or
+  /// predates this being recorded.
+  DateTime? pairedAt(String deviceId) => _trusted[deviceId]?.pairedAt;
+
   Future<void> trust(String deviceId, String name) async {
     // Preserve an already-pinned fingerprint if this device is somehow
     // trusted a second time (e.g. re-pairing) rather than resetting it.
-    _trusted[deviceId] = TrustedDevice(name: name, certFingerprint: _trusted[deviceId]?.certFingerprint);
+    // [pairedAt] always restarts though: a re-pair is a fresh pairing
+    // event whose other half is about to land, so it gets its own grace.
+    _trusted[deviceId] = TrustedDevice(
+      name: name,
+      certFingerprint: _trusted[deviceId]?.certFingerprint,
+      pairedAt: DateTime.now(),
+    );
     await _persist();
   }
 
@@ -96,7 +120,8 @@ class PairingStore {
   Future<void> pinFingerprint(String deviceId, String fingerprint) async {
     final existing = _trusted[deviceId];
     if (existing == null || fingerprint.isEmpty) return;
-    _trusted[deviceId] = TrustedDevice(name: existing.name, certFingerprint: fingerprint);
+    _trusted[deviceId] =
+        TrustedDevice(name: existing.name, certFingerprint: fingerprint, pairedAt: existing.pairedAt);
     await _persist();
   }
 

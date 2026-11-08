@@ -24,6 +24,7 @@ import '../services/settings_store.dart';
 import '../services/transfer_client.dart' show TransferClient, TransferCanceledException;
 import '../services/transfer_server.dart';
 import '../util/android_quit.dart';
+import '../util/android_reveal.dart';
 import '../util/net_log.dart';
 import '../util/network_info.dart';
 import '../util/pairing_code.dart';
@@ -171,6 +172,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       onListDir: _listRemoteDir,
       onOpenFile: _openRemoteFile,
       onClipboard: _onClipboardReceived,
+      onUnpairHint: _onUnpairHint,
       selfId: settings.deviceId,
       selfName: () => settings.deviceName,
       selfPlatform: _platformLabel(),
@@ -192,8 +194,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         platform: _platformLabel(),
       );
       _devicesSub = discovery.devicesStream.listen((list) {
+        final known = _discoveredDevices.map((d) => d.id).toSet();
         _discoveredDevices = list;
         notifyListeners();
+        // A device showing up (or coming back) is the moment to find out
+        // whether it unpaired us while we weren't looking.
+        for (final device in list) {
+          if (!known.contains(device.id)) reconcileTrust(device);
+        }
       });
       try {
         await discovery.start();
@@ -218,8 +226,17 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _notifications = notifications;
     notifications.init(onTapped: () => requestTab(2)); // 2 == Activity tab in HomeScreen._screens
 
+    _syncAndroidDownloadDir();
+    // Delayed so this system screen doesn't land on top of the
+    // notification-permission prompt that startup is also showing.
+    Future<void>.delayed(const Duration(seconds: 6), () => _syncAndroidDownloadDir(promptOnce: true));
     _resolveManualDevices();
     _manualDeviceRefreshTimer = Timer.periodic(_manualDeviceRefreshInterval, (_) => _resolveManualDevices());
+    _trustSweepTimer = Timer.periodic(_trustSweepInterval, (_) {
+      for (final device in devices) {
+        reconcileTrust(device);
+      }
+    });
   }
 
   @override
@@ -230,6 +247,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _server?.stop();
     _clipboardTimer?.cancel();
     _manualDeviceRefreshTimer?.cancel();
+    _trustSweepTimer?.cancel();
     super.dispose();
   }
 
@@ -245,6 +263,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     netLog('app', 'quitting: stopping discovery and server');
     _clipboardTimer?.cancel();
     _manualDeviceRefreshTimer?.cancel();
+    _trustSweepTimer?.cancel();
     await _discovery?.stop();
     await _server?.stop();
     if (Platform.isAndroid) {
@@ -269,6 +288,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // Covers coming back from the system "All files access" screen.
+      _syncAndroidDownloadDir();
       _discovery?.refreshSelf();
       _pollClipboard();
       _resolveManualDevices();
@@ -441,6 +462,47 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Whether Android's "All files access" is currently granted (always
+  /// false elsewhere). Drives the Settings row offering to use Downloads.
+  bool androidAllFilesGranted = false;
+
+  /// Keeps the Android download folder consistent with "All files access":
+  /// granted → move off the app-private default to the real Downloads
+  /// folder; revoked → move back off it, since it would no longer be
+  /// writable. A folder the user chose themselves is left alone.
+  /// [promptOnce] additionally asks for the permission, a single time ever,
+  /// so the phone's Downloads folder is the default without anyone having
+  /// to find the setting.
+  Future<void> _syncAndroidDownloadDir({bool promptOnce = false}) async {
+    if (!Platform.isAndroid || !_ready) return;
+    try {
+      if (promptOnce && !settings.askedAllFilesAccess && !await androidHasAllFilesAccess()) {
+        await settings.setAskedAllFilesAccess();
+        await androidRequestAllFilesAccess();
+      }
+      final granted = await androidHasAllFilesAccess();
+      final current = settings.downloadDir;
+      if (granted && isAppPrivateAndroidPath(current) && await Directory(androidPublicDownloadsDir).exists()) {
+        netLog('app', 'all-files access granted — download folder is now $androidPublicDownloadsDir');
+        await settings.setDownloadDir(androidPublicDownloadsDir);
+      } else if (!granted && current == androidPublicDownloadsDir) {
+        final private = await androidPrivateDownloadDir();
+        if (private != null) await settings.setDownloadDir(private);
+      }
+      androidAllFilesGranted = granted;
+      notifyListeners();
+    } catch (e) {
+      netLog('app', 'could not sync the Android download folder: $e');
+    }
+  }
+
+  /// Explicit "use the phone's Downloads folder" action from Settings.
+  Future<bool> useDeviceDownloads() async {
+    final granted = await androidRequestAllFilesAccess();
+    await _syncAndroidDownloadDir();
+    return granted;
+  }
+
   Future<void> updateDownloadDir(String path) async {
     await settings.setDownloadDir(path);
     notifyListeners();
@@ -463,11 +525,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  Future<void> setTrusted(String deviceId, String name, bool trusted) async {
+  Future<void> setTrusted(String deviceId, String name, bool trusted, {bool notifyPeer = true}) async {
     if (trusted) {
       await pairing.trust(deviceId, name);
     } else {
+      final fingerprint = pairing.expectedFingerprint(deviceId);
+      final wasTrusted = pairing.isTrusted(deviceId);
       await pairing.untrust(deviceId);
+      if (notifyPeer && wasTrusted) _sendUnpairHint(deviceId, fingerprint);
       // Clipboard sync is only meaningful between trusted devices —
       // leaving it pointed at a device the user just explicitly untrusted
       // would keep silently pushing clipboard contents to it every poll.
@@ -513,6 +578,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         selfId: settings.deviceId,
         selfName: settings.deviceName,
         code: attempt.code,
+        pairId: attempt.id,
       );
       if (result.accepted) {
         await pairing.trust(target.id, target.name);
@@ -564,6 +630,102 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (pairing.isTrusted(deviceId) && pairing.expectedFingerprint(deviceId) == null) {
       await pairing.pinFingerprint(deviceId, fingerprint);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Trust reconciliation
+  // ---------------------------------------------------------------------
+  //
+  // Pairing is meant to be mutual, but each device stores its half
+  // separately, so the halves can drift apart: one side removes the other
+  // while it's offline, a pairing's accept never reaches its requester, and
+  // so on. Rather than trying to make every such path atomic, trust is only
+  // *kept* while the peer confirms it trusts us back — a device that finds
+  // its peer no longer does drops its own half, and both sides converge on
+  // "unpaired" (the same state a fresh pairing starts from) instead of one
+  // showing Paired while the other offers to Pair.
+
+  /// How long after (re-)trusting a device before its answer to "do you
+  /// trust me?" counts. The two halves of a pairing commit moments apart,
+  /// so inside this window a "no" is just the other half not landing yet.
+  static const _trustGrace = Duration(minutes: 2);
+  static const _reconcileMinGap = Duration(seconds: 30);
+  static const _trustSweepInterval = Duration(seconds: 60);
+
+  Timer? _trustSweepTimer;
+  final Map<String, DateTime> _lastReconcile = {};
+  final Set<String> _reconciling = {};
+
+  /// Asks [device], if we trust it, whether it still trusts us, and drops
+  /// our trust if it says it doesn't. "No information" (unreachable, wrong
+  /// certificate, an older app without the endpoint) never drops anything.
+  Future<void> reconcileTrust(Device device, {bool force = false}) async {
+    final id = device.id;
+    if (!pairing.isTrusted(id) || !_reconciling.add(id)) return;
+    try {
+      final last = _lastReconcile[id];
+      if (!force && last != null && DateTime.now().difference(last) < _reconcileMinGap) return;
+      _lastReconcile[id] = DateTime.now();
+
+      final pairedAt = pairing.pairedAt(id);
+      if (pairedAt != null) {
+        final remaining = _trustGrace - DateTime.now().difference(pairedAt);
+        if (remaining > Duration.zero) {
+          // Too soon to judge — look again once the grace period is over,
+          // so a pairing undone inside it still gets cleaned up.
+          Timer(remaining + const Duration(seconds: 2), () {
+            final current = devices.where((d) => d.id == id);
+            if (current.isNotEmpty) reconcileTrust(current.first, force: true);
+          });
+          return;
+        }
+      }
+
+      var fingerprint = pairing.expectedFingerprint(id);
+      if (fingerprint == null) {
+        // Trusted but never pinned (we were the side that accepted a pair
+        // request, and haven't connected out since). Pin now — the same
+        // trust-on-first-use step the first outgoing connection would
+        // take — after confirming this address really is that device.
+        try {
+          final probe = await _client.probeDevice(address: device.address, port: device.port, quiet: true);
+          if (probe.device.id != id || probe.certFingerprint.isEmpty) return;
+          await _pinIfUnpinned(id, probe.certFingerprint);
+          fingerprint = pairing.expectedFingerprint(id);
+        } catch (_) {
+          return;
+        }
+        if (fingerprint == null) return;
+      }
+
+      final theyTrustUs = await _client.checkTrust(
+        target: device,
+        selfId: settings.deviceId,
+        expectedFingerprint: fingerprint,
+      );
+      // Re-pairing while the check was in flight restarts the grace
+      // period; that answer predates it and must not undo the new pairing.
+      if (theyTrustUs == false && pairing.isTrusted(id) && pairing.pairedAt(id) == pairedAt) {
+        netLog('app', '${device.name} no longer trusts us — dropping our side of the pairing');
+        await setTrusted(id, device.name, false, notifyPeer: false);
+      }
+    } finally {
+      _reconciling.remove(id);
+    }
+  }
+
+  /// A peer says it unpaired us: confirm with the peer itself (the hint
+  /// alone proves nothing) as soon as it's reachable, instead of waiting
+  /// for the next sweep.
+  void _onUnpairHint(String peerId) {
+    final match = devices.where((d) => d.id == peerId);
+    if (match.isNotEmpty) reconcileTrust(match.first, force: true);
+  }
+
+  void _sendUnpairHint(String deviceId, String? fingerprint) {
+    final match = devices.where((d) => d.id == deviceId);
+    if (match.isEmpty) return; // Offline: the peer's own sweep will find out.
+    _client.sendUnpairHint(target: match.first, selfId: settings.deviceId, expectedFingerprint: fingerprint);
   }
 
   // ---------------------------------------------------------------------
@@ -633,6 +795,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         record.status = TransferStatus.declined;
         await _finishRecord(record);
         return;
+      }
+
+      // The receiver chose to trust us from its accept dialog; if we showed
+      // a pairing code for this send, trust it back so that choice doesn't
+      // leave the pairing existing on one side only.
+      if (result.peerTrustsUs && record.pairingCode != null && !pairing.isTrusted(target.id)) {
+        await pairing.trust(target.id, target.name);
+        await pairing.pinFingerprint(target.id, result.certFingerprint);
+        netLog('app', '${target.name} trusted us from the accept dialog — trusting it back');
       }
 
       record.status = TransferStatus.transferring;
@@ -860,6 +1031,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       netLog('app', 'incoming ${request.transferId} file $fileIndex saved, $received bytes total');
       record?.savedPaths.add(savePath);
       _incomingFilePaths.remove(key);
+      _publishToDownloads(savePath, meta.name);
 
       if (record != null && fileIndex == request.files.length - 1) {
         record.status = TransferStatus.completed;
@@ -1026,6 +1198,21 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Android only: copies a just-completed incoming file into the public
+  /// MediaStore Downloads collection, so it shows up in the Files app and
+  /// other apps' pickers without needing a storage permission grant. Fire
+  /// and forget — [savePath] in the app's own folder is already the saved
+  /// file; this is a visibility nice-to-have, never something a transfer's
+  /// success should depend on.
+  void _publishToDownloads(String savePath, String fileName) {
+    // Only needed for the app-private folder; a file already saved into the
+    // public Downloads folder would just be duplicated by a copy.
+    if (!Platform.isAndroid || !isAppPrivateAndroidPath(savePath)) return;
+    androidPublishToDownloads(savePath, fileName).then((ok) {
+      if (!ok) netLog('app', 'could not publish $fileName to Downloads (non-fatal)');
+    });
+  }
+
   Future<void> clearHistory() async {
     await history.clear();
     completedTransfers = [];
@@ -1147,6 +1334,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       );
       record.status = TransferStatus.completed;
       record.savedPaths.add(savePath);
+      _publishToDownloads(savePath, entry.name);
       netLog('app', 'download ${record.id} completed');
     } catch (e) {
       netLog('app', 'download ${record.id} failed/canceled: $e');
