@@ -19,7 +19,17 @@ jobs:
           cache: true
 
       - run: flutter pub get
-      - run: flutter build windows --release
+      - name: Build Windows app
+        shell: pwsh
+        run: |
+          flutter build windows --release 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            # Surface the real error as an annotation, readable without
+            # signing in to GitHub (raw job logs aren't).
+            $tail = (Get-Content build.log | Select-String -Pattern 'error|Error|fatal|failed|not found' | Select-Object -Last 12 | ForEach-Object { $_.Line.Trim() }) -join '%0A'
+            Write-Host "::error title=flutter build windows failed::$tail"
+            exit 1
+          }
 
       # Ship the Visual C++ runtime next to the exe so the app starts on a
       # PC that has never installed the VC++ redistributable.
