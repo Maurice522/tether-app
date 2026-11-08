@@ -9,7 +9,10 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # windows-2022 (Visual Studio 2022), not windows-latest: the newest Visual
+    # Studio dropped headers permission_handler_windows still uses, and fails
+    # to compile it.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
@@ -21,6 +24,8 @@ jobs:
       - run: flutter pub get
       - name: Build Windows app
         shell: pwsh
+        env:
+          CL: /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
         run: |
           flutter build windows --release 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) {
